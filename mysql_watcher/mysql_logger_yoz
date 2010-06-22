@@ -1,0 +1,115 @@
+#!/usr/bin/env python
+#
+# $LicenseInfo:firstyear=2010&license=mit$
+# 
+# Copyright (c) 2010, Linden Research, Inc.
+# 
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+# 
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+# 
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+# $/LicenseInfo$
+#
+
+"""
+Log all queries hitting a particular mysql database
+For poppy
+"""
+
+try:
+    import psyco
+    psyco.full()
+except:
+    pass
+
+import curses
+import curses.wrapper
+import getopt
+import os.path
+import re
+import socket
+import sys
+import time
+
+from dblibs.dbutil import LLQueryStream, remote_mysql_stream
+
+
+
+
+
+def watch_host(query_stream, host):
+
+    output_path = "./%s" % host
+    os.system("mkdir -p %s" % output_path)
+    query_log_file = open("%s/query.log" % output_path, "a")
+
+    ip_re = re.compile("\d+\.\d+\.\d+\.\d+")
+
+    done = False
+    count = 0
+    try:
+        while not done:
+            (event_type, query) = query_stream.getNextEvent()
+
+            named_host = query.mData['host']
+            if ip_re.match(query.mData['host']):
+                # Look up the hostname
+                try:
+                    named_host = socket.gethostbyaddr(query.mData['host'])[0]
+                except:
+                    pass
+
+            if event_type == "QueryStart":
+                query_log_file.write("%f\t%s:%d\t%s\tQueryStart\n" % (query.mStartTime, query.mData['host'], query.mData['port'], named_host))
+                query_log_file.write("%s\n" % (query.mData['query_clean']))
+                query_log_file.write("**************************************\n")
+                count += 1
+            elif (event_type == "QueryResponse"):
+                query_log_file.write("%f\t%s:%d\t%s\tQueryResponse\n" % (query.mResponseTime, query.mData['host'], query.mData['port'], named_host))
+                query_log_file.write("%s\n" % (query.mData['query']))
+                query_log_file.write("**************************************\n")
+            elif event_type == "Quit":
+                # Quit is an "instantaneous" query, both start and response
+                continue
+            if not (count % 1000):
+                try:
+                    os.waitpid(-1, os.WNOHANG)
+                except OSError:
+                    pass
+
+            
+    except KeyboardInterrupt:
+        pass
+    query_log_file.close()
+
+
+if __name__ == "__main__":
+    opts, args = getopt.getopt(sys.argv[1:], "", ["host="])
+
+    host = None
+    for o, a in opts:
+        if o in ("--host"):
+            host = a
+    if not host:
+        print "Specify a host using --host="
+        sys.exit(1)
+
+    # Start up the stream from the target host and create a file
+    # that we can hand to LLQueryStream
+    query_stream_file = remote_mysql_stream(host)
+    query_stream = LLQueryStream(query_stream_file)
+
+    watch_host(query_stream, host)

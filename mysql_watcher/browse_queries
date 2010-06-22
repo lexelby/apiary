@@ -1,0 +1,85 @@
+#!/usr/bin/python
+
+"""
+Browse query result files, and view/edit metadata associated with queries
+"""
+import os.path
+if os.path.exists("../setup-path.py"):
+    execfile("../setup-path.py")
+import getopt, sys
+
+import curses
+import curses.textpad
+import curses.wrapper
+import string
+import sys
+import time
+
+from indra.base import llsd
+from dblibs.dbbrowser import *
+
+def sort_by_field(d, field):
+    "Returns the keys of dictionary d sorted by the value in the field"
+    items=d.items()
+    backitems=[ [v[1][field],v[0]] for v in items]
+    backitems.sort()
+    return [ backitems[i][1] for i in range(0,len(backitems))]
+
+LIST_HEIGHT = 20
+
+def dump_query_info(query_map, fn):
+    #
+    # Sort by the map key (so that there's some hope of merging
+    #
+    sorted_keys = query_map.keys()
+    sorted_keys.sort()
+
+    out = []
+    for key in sorted_keys:
+        row = query_map[key]
+        out_row = {}
+        out_row['query'] = row['query']
+        out_row['host'] = row['host']
+        out_row['notes'] = row['notes']
+        out.append(out_row)
+
+    f = open(fn, "w")
+    f.write(str(llsd.LLSD(out)))
+    f.close()
+
+
+def display_queries(stdscr, query_stats, query_metadata):
+    # Create the query browser
+    query_browser = LLQueryBrowser(stdscr, query_stats, query_metadata)
+    query_browser.redraw()
+
+    done = False
+    while not done:
+        c = stdscr.getch()
+        if query_browser.handleKey(c):
+            pass
+        elif c == ord('q'):
+            # Quit
+            query_metadata.save("./query_info.llsd")
+            done = True
+            break
+        if c == ord('w'):
+            query_metadata.save("./query_info.llsd")
+            pass
+        elif c == ord('s'):
+            query_browser.toggleSort()
+        elif c == ord('n'):
+            # Go forth and edit notes
+            query_browser.editSelectedText('notes')
+        else:
+            print "Pressed key %s" % c
+        query_browser.redraw()
+
+if __name__ == "__main__":
+    path = sys.argv[1]
+
+    # Read in metadata
+    query_metadata = LLQueryMetadata("./query_info.llsd")
+    query_stats = LLQueryStatMap(path, time.time())
+    query_stats.load(path)
+    curses.wrapper(display_queries, query_stats, query_metadata)

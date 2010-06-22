@@ -1,0 +1,64 @@
+
+=== LOGS ===
+
+On nyarlathotep we generate logs from packet captures of SQL hitting the
+database. These files look like this:
+
+    1237237351.064750	10.2.231.65:40784	sim	QueryStart
+    SELECT owner_id, is_owner_group FROM parcel WHERE
+    parcel_id='9d50d6eb-a623-2a30-a8e0-840189fabff7'
+    **************************************
+    1237237351.064759	10.0.0.172:56714	web	Quit
+    Quit
+    **************************************
+    1237237351.064861	10.2.231.65:40784	sim	QueryResponse
+    SELECT owner_id, is_owner_group FROM parcel WHERE
+    parcel_id='9d50d6eb-a623-2a30-a8e0-840189fabff7'
+    **************************************
+    1237237351.065393	10.6.6.97:39706	sim	QueryStart
+
+These logs allow us to replay sequences of SQL by connection.  However, the
+"Quit" indicator that shows when a sequence ends, isn't always present. Once
+you have a log, you need to generate the missing ends (assumed to be just
+after the last SQL on a connection). To do this, run something like:
+
+    gzcat query.log.21.gz | python sqllog_genends.py > query.log.21-ends
+    
+The log and the end files need to be merged for any operation, however, the
+scripts all take multiple input files and will do a sorted merge as they
+process.  Since the source is almost always gzip'd, you can use a dash to
+make stdin one of the merged inputs:
+
+    gzcat query.log.21.gz | python sqllog_stats.py - query.log.21-ends
+
+The above also shows that you can generate statistics about a stream of events
+(or several streams merged) with the sqllog_stats.py script.
+
+Warning: These log files are VERY large and 
+
+
+=== HIVE ===
+
+You can play around with a simple test of hive (that does no work but pass
+around strings):
+
+    python hive_stats.py --central --workers 5
+
+You can play around with settings there and explore the hive framework
+This test program could be improved, I suppose, and might help us determine
+the proper thread and fork and machine counts (see below)
+
+
+=== MISC ===
+
+There are some generally useful python modules here:
+
+mergetools - iterate over a merge of multiple sorted sequences in order
+stattools - a statistics gathering counter
+timestamp - a representation of time in seconds + microseconds format
+
+There are unit tests... 
+
+    for f in *_test.py; do echo === $f ===; python $f; done
+    
+

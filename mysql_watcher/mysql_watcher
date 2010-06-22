@@ -1,0 +1,188 @@
+#!/usr/bin/env python
+#
+# $LicenseInfo:firstyear=2010&license=mit$
+# 
+# Copyright (c) 2010, Linden Research, Inc.
+# 
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+# 
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+# 
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+# $/LicenseInfo$
+#
+
+"""
+Provides real-time query profiling of mysql by using tcpdump and netcat.
+
+You need to have the root ssh key to use it.
+"""
+
+try:
+    # To improve performance on older Pythons that support psyco
+    import psyco
+    psyco.full()
+except:
+    pass
+
+import curses
+import curses.wrapper
+import getopt
+import os
+import re
+import socket
+import sys
+import time
+
+from dblibs.dbutil import LLQueryStream, LLQueryStatMap, LLBinnedQueryStats, remote_mysql_stream
+from dblibs.dbbrowser import *
+
+DUMP_INTERVAL = 5.0
+
+def process_query_stream(stdscr, query_stream, query_metadata, host):
+    "Processes mysql query events coming from the stream"
+
+    #
+    # Options/parameters
+    #
+    output_path = "./%s" % host
+    # Make output path
+    os.system("mkdir -p %s" % output_path)
+
+    # Curses configuration stuff
+    size = stdscr.getmaxyx()
+    stdscr.nodelay(True) # Non-blocking keyboard input
+
+    sort_by = "total_time"
+
+    count = 0
+    cur_time = 0
+    last_time = time.time()
+    last_count = 0
+    total_stats = LLQueryStatMap("Total", time.time())
+    cur_stats = LLQueryStatMap("5 seconds", time.time())
+    prev_stats = LLQueryStatMap("5 seconds", time.time())
+    display_stats = prev_stats
+
+    # Initialize the curses query data browser
+    query_browser = LLQueryBrowser(stdscr, cur_stats, query_metadata)
+
+    last_hour = 0
+    done = False
+    try:
+        while not done:
+            # The real work happens inside here - this is where we get the next event coming off of the mysql stream
+            (event_type, query) = query_stream.getNextEvent()
+
+            # Use the start time to determine which hour bin to put the query into
+            start_time = query.mStartTime
+            start_hour = time.localtime(start_time)[3]
+            
+            if event_type == "QueryStart":
+                total_stats.queryStart(query)
+                cur_stats.queryStart(query)
+            elif (event_type == "QueryResponse"):
+                total_stats.queryResponse(query)
+                cur_stats.queryResponse(query)
+                count += 1
+            elif event_type == "Quit":
+                # Quit is an "instantaneous" query, both start and response
+                total_stats.queryStart(query)
+                total_stats.queryResponse(query)
+                cur_stats.queryStart(query)
+                cur_stats.queryResponse(query)
+                continue
+
+            if 0 == (count % 20):
+                # Handle keyboard input every 20th event (slow in the case of a not-very-loaded database
+                c = 0
+                done = False
+                while -1 != c:
+                    # Fetch the key from curses
+                    c = stdscr.getch()
+                    if -1 == c:
+                        # Skip if no keyboard input
+                        pass
+                    # See if the generic query browser class handles it
+                    elif query_browser.handleKey(c):
+                        # Yep, just redraw
+                        query_browser.redraw()
+                        pass
+                    #
+                    # Check other keyboard events
+                    #
+                    elif c == ord('q'):
+                        # Quit
+                        done = True
+                        break
+                    elif c == ord(' '):
+                        # Switch which stats we're displaying between the previous interval (last 5 secs) and total interval
+                        if display_stats == prev_stats:
+                            display_stats = total_stats
+                        elif display_stats:
+                            display_stats = prev_stats
+                        query_browser.setQueryMap(display_stats)
+                        query_browser.redraw()
+                    elif c == ord('d'):
+                        # Dump output to files
+                        total_stats.dumpTiming("%s/query_timing.txt" % output_path)
+                        total_stats.dumpLLSD("%s/query_dump.llsd" % output_path)
+                    else:
+                        print "Pressed key %s" % c
+
+                # Switch the current stat accumulator bin every DUMP_INTERVAL
+                cur_time = time.time()
+                if (cur_time - last_time > DUMP_INTERVAL):
+                    last_time = cur_time
+                    last_count = count
+                    if display_stats == prev_stats:
+                        display_stats = cur_stats
+                    prev_stats = cur_stats
+                    prev_stats.mElapsedTime = 5.0
+                    cur_stats = LLQueryStatMap("5 seconds", time.time())
+                    query_browser.setQueryMap(display_stats)
+                    query_browser.redraw()
+    except KeyboardInterrupt:
+        pass
+
+    # Dump total stats on exit
+    total_stats.dumpTiming("%s/query_timing.txt" % output_path)
+    total_stats.dumpLLSD("%s/query_dump.llsd" % output_path)
+
+
+#
+# Start the main application, parse parameters
+#
+if __name__ == "__main__":
+    opts, args = getopt.getopt(sys.argv[1:], "", ["host="])
+
+    host = None
+    for o, a in opts:
+        if o in ("--host"):
+            host = a
+    if not host:
+        print "Specify a host using --host="
+        sys.exit(1)
+
+    # Load existing metadata
+    query_metadata = LLQueryMetadata("./query_info.llsd")
+
+    # Start up the stream from the target host and create a file
+    # that we can hand to LLQueryStream.
+    query_stream_file = remote_mysql_stream(host)
+    query_stream = LLQueryStream(query_stream_file)
+
+    # start up the curses interface and start processing the stream data
+    curses.wrapper(process_query_stream, query_stream, query_metadata, host)

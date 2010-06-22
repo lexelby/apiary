@@ -1,0 +1,6 @@
+apiary for Debian
+-----------------
+
+This debian package is targetted towards the internal Linden Lab infrastructure.  If it does not work on your distribution, let the apiary list know.
+
+ -- Inoshiro Linden <apiary@lists.secondlife.com>  Fri, 26 Feb 2010 16:16:30 -0800

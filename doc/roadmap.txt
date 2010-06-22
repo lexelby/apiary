@@ -1,0 +1,24 @@
+= 0.7 =
+
+- Dumb HTTP support - playback of literal http requests to a socket. 
+- Fix the MySQL parser so that it does not silently ignore parse errors.
+- Create abstractions for the queue messages that uses a simple encoding scheme (maybe utf-8 simplejson encoding?).
+- Open source announcement.
+
+
+= Some upcoming release =
+
+- A consistent log format for all message types (at least the same 3rd party, tested, parsing library).
+- Redesign everything to avoid Python threads:
+  The QueenBee will become a separate process that communicates explicitly by producing to message queues.
+  The BeeKeeper will launch subprocesses then listen to message queues in a blocking manner.
+  The Workers respond to message queue events.
+
+
+= Longer Term =
+
+- Write a high performance worker using something like twisted or greenlet.
+  This needs the message queue and target protocol clients to work with the high performance model.
+
+
+

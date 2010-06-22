@@ -1,0 +1,115 @@
+SUMMARY
+-------
+
+apiary is a distributed, protocol-independent load testing framework, written
+in Python, that replays captured queries, simulating production load patterns.
+
+A beekeeper process feeds sequences of one or more queries into an AMQP queue,
+and one or more workerbee processes retrieve sequences from the queue, send the
+associated queries to the specified target host, and report their results to
+the queenbee to be tallied.  The beekeeper prints a summary of the progress
+every 15 seconds and when all the workerbees are done.
+
+
+REQUIREMENTS
+------------
+
+* RabbitMQ 1.6
+
+* lsprof (if you want to use --profile)
+http://codespeak.net/svn/user/arigo/hack/misc/lsprof/
+
+* py-amqplib (only tested with an implementation of the 0-8 spec)
+http://hg.barryp.org/py-amqplib/file/
+
+* maatkit
+http://maatkit.org/
+
+
+RABBITMQ SETUP
+--------------
+
+To configure a local, running instance of RabbitMQ, execute the following:
+
+    sudo sh bin/setup-rabbitmq.sh
+
+This will delete the apiary vhost and user, re-add them, and then set up
+the appropriate permissions.  This must be run as root.
+
+
+SAMPLE OUTPUT
+-------------
+
+To see sample output from apiary, execute the following:
+
+    sh bin/run-apiary.sh
+
+If you don't have RabbitMQ running on localhost, you can modify AMQPHOST in the
+file above before running it.  The initial output should look something like:
+
+    Starting workerbee on localhost
+    Starting beekeeper process
+    Initializing QueenBee
+
+At that point, sequences should be inserted into the queue, and workers should
+begin pulling them and issuing them against the configured target system.  A
+summary of the results will be printed when all of the sequences have been
+issued.  The default version of run-apiary.sh will generate fake, positive
+responses from a SQL server, so you do not need a SQL server running to see
+what the output of apiary looks like.
+
+
+TUTORIAL
+--------
+
+This tutorial assumes you have mysql running on localhost with no password for
+the root user.  Adapt the commands below appropriately if that is not the case.
+
+1. Some sample data is included.  This will create an "apiary_demo" database:
+
+    mysql -u root < data/demo.sql
+
+2. Use tcpdump to capture mysql traffic for maatkit consumption:
+
+    sudo tcpdump -i lo port 3306 -s 65535 -x -n -q -tttt> /tmp/tcpdump.out
+
+3. In a separate terminal, run a script that will generate some queries against
+the test data:
+
+    sh bin/run-demo-queries.sh
+
+4. Stop the tcpdump process that you started in step 2.
+5. Turn the tcpdump data into a query digest using maatkit:
+
+    mk-query-digest --type=tcpdump --no-report --print /tmp/tcpdump.out > /tmp/apiary_query_digest.txt
+
+6. Convert the query digest into a sequence file:
+
+    PYTHONPATH=. python apiary/mysql/genseqs.py /tmp/apiary_query_digest.txt > /tmp/apiary_seq.txt
+
+7. Replace the COMMON_OPTS and BEEKEEPER_OPTS lines in bin/run-apiary.sh with:
+
+    COMMON_OPTS='--mysql-host=localhost --mysql-user=root --mysql-db=apiary_demo --timeout 30'
+    BEEKEEPER_OPTS='--beekeeper /tmp/apiary_seq.txt'
+
+8. Run apiary:
+
+    sh bin/run-apiary.sh
+
+9. You should see a summary of the results in a few seconds. 
+
+
+SUPPORT
+-------
+
+Documentation for apiary can be found in the apiary wiki:
+
+    http://hg.secondlife.com/apiary/wiki/Home
+
+You can direct any questions about apiary to the following mailing list:
+
+    apiary@lists.secondlife.com
+
+You can file bug reports or feature requests using the issue tracker at: 
+
+    http://hg.secondlife.com/apiary/issues/

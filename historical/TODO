@@ -1,0 +1,83 @@
+=== SQL Database Prep ===
+
+1. run a slave sync'd to mysql.agni - but stop it at 2pm, Sunday
+2. grab the logs off of nyar for 2pm-3pm and 3pm-4pm
+3. generate ends for these files... something like:
+
+    gzcat query.log.98.gz query.log.99.gz 
+        | python sqllog_genends.py > query.log.98-99-ends
+        
+    this will take a long time
+
+4. generate a short, test file -- say 100k likes:
+
+    gzcat query.log.98.gz | head -100000 > query.log.98-short
+    
+5. generate ends for that:
+
+    python sqllog_genends.py query.log.98-short > query.log.98-short-ends
+
+6. generate stats for both of the above sets
+
+    gzcat query.log.98.gz query.log.99.gz 
+        | python sqllog_stats.py - query.log.98-99-ends > stats-big
+    
+    python sqllog_stats.py query.log.98-short query.log.98-short-ends > stats-small
+    
+    The big stats will tell us how many workers we need....
+    
+    
+    
+=== Software To Do ===
+
+The forking code has not been tested, the threading code has.  The fork bit, though, is pretty boilerplate.  The forks should detach correctly. 
+
+QueryResponse events need to be ignored when replayed, but not for end generation.
+
+Need to add logic to guess the schema on the first query
+
+Hive needs a better way to build up option parsers, and pass them around
+with defaults.
+
+
+=== Running ===
+
+We are going to need the following procedure either in a script, or at least
+easy to run:
+
+1. reset test mysql instance to known state
+
+2. start n worker threads, on m processes, on k machines:
+
+    dsh to k machines:
+        python hive_mysql.py --fork m --workers n
+    ... assuming all those machines have the software in the right place...
+
+    yup - i don't know what n, m, or k should be.... Only that we'll
+    need n*m*k to be about the max concurrency given in the stats (from above)
+    whether threads are good enough, or forks are better... who knows...
+    nor do I know how many per machine..... thoughts?
+    
+    
+3. start a central:
+
+    python hive_mysql.py --central query.log.98-short query.log.98-short-ends
+    
+    -or-
+    
+    gzcat query.log.98.gz query.log.99.gz
+        | python hive_mysql.py --central - query.log.98-99-ends
+
+That should print out stats at the very end -- how long it took to run in particular.
+
+At the same time as we are running this, we should, I suppose be gathering
+the IO stats and CPU stats on the mysql db machine.
+
+
+
+=== The Experiment ===
+
+Once the above is all done .... THEN we can start the experiments,
+in which we filter the event stream in hive_mysql.py's MySQLCentral
+to not have various tables, etc....  -- and then re-run and look at times
+

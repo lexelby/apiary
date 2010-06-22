@@ -1,0 +1,20 @@
+Source: apiary
+Section: unknown
+Priority: extra
+Maintainer: Inoshiro Linden <apiary@lists.secondlife.com>
+Build-Depends: debhelper (>= 5)
+Standards-Version: 3.7.2
+XS-Python-Version: all
+
+Package: apiary
+Architecture: any
+Section: python
+Depends: ${python:Depends}, ${shlibs:Depends}, ${misc:Depends}, python-amqplib, python-mysqldb, rabbitmq-server (>= 1.7), python-simplejson
+XB-Python-Version: ${python:Versions}
+Description: A MySQL and HTTP performance measurement tool with a network capture/playback design.
+  Apiary is a network performance measurement tool which currently
+  targets MySQL and simple HTTP services.  It provides a recording tool
+  which records realistic traffic from a reference envrionment, and then
+  a distributed playback tool which replays the recorded traffic from a
+  cluster of clients. The playback has the same message order for a given
+  recorded client connection and also approximates the same time deltas.

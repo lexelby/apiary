@@ -1,0 +1,38 @@
+digraph ApiaryArchitecture {
+
+subgraph cluster_MainProc {
+  style = "dotted";
+  label = "Main Process";
+
+  mainproc[label = "<keeper> BeeKeeper| <queen> QueenBee", shape = "record", fillcolor = "#0000ff"];
+}
+
+jobqueue[label = "worker-job", shape = "invhouse"];
+statqueue[label = "worker-status", shape = "invhouse"];
+endqueue[label = "beekeeper-end", shape = "invhouse"];
+
+worker1[label = "WorkerBee", shape = "box"];
+worker2[label = "WorkerBee", shape = "box"];
+worker3[label = "WorkerBee", shape = "box"];
+
+target[label = "Target\nService", shape = "octagon"];
+
+mainproc:queen -> endqueue;
+endqueue -> mainproc:keeper;
+
+mainproc:queen -> jobqueue;
+
+jobqueue -> worker1;
+jobqueue -> worker2;
+jobqueue -> worker3;
+
+worker1 -> target [dir = "both", penwidth = 4];
+worker2 -> target [dir = "both", penwidth = 4];
+worker3 -> target [dir = "both", penwidth = 4];
+
+worker1 -> statqueue;
+worker2 -> statqueue;
+worker3 -> statqueue;
+
+statqueue -> mainproc:beekeeper
+}

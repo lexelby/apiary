@@ -1,0 +1,65 @@
+#!/usr/bin/make -f
+# -*- makefile -*-
+
+# Uncomment this to turn on verbose mode.
+#export DH_VERBOSE=1
+
+PACKAGE  := apiary
+PKG_ROOT := $(CURDIR)/debian/$(PACKAGE)
+
+# Install for every supported python version (listed in the control file).
+PYVERS := $(shell pyversions -vr)
+
+build: build-stamp patch
+build-stamp: $(PYVERS:%=build-version-%)
+	touch $@
+build-version-%:
+	dh_testdir
+	python$* setup.py build
+	touch $@
+
+patch: patch-stamp
+patch-stamp:
+	dpatch apply-all
+	touch $@
+
+unpatch:
+	dpatch deapply-all
+	rm -rf patch-stamp debian/patched
+
+clean: unpatch
+	dh_testdir
+	dh_testroot
+	rm -f *-stamp build-version-* install-version-*
+	rm -rf build dist *.egg-info
+	-find . -name '*.py[co]' -exec rm -f {} \;
+	dh_clean
+
+install: install-stamp
+install-stamp: build-stamp $(PYVERS:%=install-version-%)
+install-version-%:
+	dh_testdir
+	dh_testroot
+	dh_clean -k
+	dh_installdirs
+	python$* setup.py install \
+	    --root=$(PKG_ROOT) --single-version-externally-managed
+
+binary-indep: build install
+	dh_testdir
+	dh_testroot
+	dh_installchangelogs
+	dh_installdocs
+	#dh_installexamples -X.svn examples/*
+	dh_pycentral
+	dh_compress -X.py
+	dh_fixperms
+	dh_installdeb
+	dh_gencontrol
+	dh_md5sums
+	dh_builddeb
+
+binary-arch: build install
+
+binary: binary-indep binary-arch
+.PHONY: build clean binary-indep binary-arch binary install configure patch unpatch

@@ -1,0 +1,221 @@
+#!/usr/bin/env python
+#
+# $LicenseInfo:firstyear=2010&license=mit$
+# 
+# Copyright (c) 2010, Linden Research, Inc.
+# 
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+# 
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+# 
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+# $/LicenseInfo$
+#
+
+"""
+Log all queries hitting a particular mysql database
+Dump all queries into streambase
+"""
+
+try:
+    import psyco
+    psyco.full()
+except:
+    pass
+
+import getopt
+import os.path
+import re
+import socket
+import sys
+import time
+import md5
+import struct
+import time
+import errno
+
+from dblibs.dbutil import LLQueryStream, remote_mysql_stream
+from socket import *
+
+# Socket Params
+SB_HOST = 'query-profiler.lindenlab.com'
+SB_PORT = 15999
+BUFSIZ = 1024
+SB_ADDR = (SB_HOST, SB_PORT)
+
+def open_SB_socket():
+
+    tcpSBSocket=socket(AF_INET, SOCK_STREAM)
+    try:
+        tcpSBSocket.connect(SB_ADDR)
+    except error, e:
+        print "Could not create socket connection to %s ", SB_ADDR
+        print str(e)
+        tcpSBSocket.close()
+
+    return tcpSBSocket
+
+
+def close_SB_socket(tcpSBSocket):
+
+    tcpSBSocket.close()
+
+
+def watch_host(query_stream, host):
+    "Watches query traffic for a particular host.  Dumps queries into streambase."
+
+    tcpSBSocket = open_SB_socket()
+
+    # make output path
+    log_path = "./%s" % host
+    os.system("mkdir -p %s" % log_path)
+
+    done = 0
+    query_count = 0
+
+    while not done:
+        (event_type, query) = query_stream.getNextEvent()
+        event_num = None
+        event_time = None
+
+        if event_type == "QueryStart":
+            event_num = 1
+            event_time = query.mStartTime
+        elif event_type == "QueryResponse":
+            event_num = 2
+            event_time = query.mResponseTime
+        elif event_type == "Quit":
+            event_num = 3
+            event_time = "null"
+
+        if event_num is not None:
+
+            if event_num == 3:
+                query_clean = "null"
+                md5query = "null"
+            else:
+                query_clean = query.mData['query_clean']
+                md5query = md5.new(query_clean).hexdigest()
+
+            event_hash = "%s:%s" % (query.mData['host'], query.mData['port'])
+            event_hash = md5.new(event_hash).digest()[:4]
+            event_hash = "%s" % struct.unpack("I", event_hash)
+            event_hash = event_hash[:4]
+
+            query_hash = "%s:%s:%s" % (query.mData['host'], query.mData['port'], query.mData['query_clean'])
+            query_hash = md5.new(query_hash).hexdigest()
+
+#            query_no_whitespace = query.mData['query'].replace("\n", "")
+
+#            query_test = 'dfsdf"sdf'
+#            query_test_escaped = query_test.replace('"', '\\"')
+#            print query_test_escaped
+#            query_escaped = query_no_whitespace.replace('"', '\\"')
+#            query_escaped = query_escaped.replace("'", "\\'")
+#            query_escaped_quoted = '"' + query_escaped + '"'
+
+#            query_no_whitespace = query_no_whitespace[:10]
+
+#            print "unclean query %s" % (query.mData['query'])
+#            print "query %s" % (query_no_whitespace)
+
+            dummy_query = "foo"
+
+            tuple = "%s^%s^%s^%s^%s^%s^%s^%s^%s^%s^%s" % (host, event_num, event_hash, event_time, query.mData['host'], query.mData['port'], query.mData['host_clean'], query_clean, md5query, query_hash, dummy_query)
+
+#            if query_count % 10 == 0:
+#                print "skipping query %s" % (tuple)
+#                query_count = query_count+1
+#                continue
+
+            try:
+                # uncomment for debuggery
+                datestring = time.strftime ("%D %T").strip()
+                #print datestring, " : " , tuple
+                #query_error_file.write(tuple + "\n")
+                tcpSBSocket.send(tuple + "\n")
+                query_count = query_count+1
+#                print "%s : query count = %s, connection table = %s" % (datestring, query_count, len (query_stream.mConnStatus))
+
+#                try:
+#                    query_log_file = open("%s/query_log.log" % log_path, "a")
+#                    datestring = time.strftime ("%D %T").strip()
+#                    query_log_file.write("%s: %s \n" % (datestring, tuple))
+#                except IOError:
+#                    print ("can't write to file %s", query_log_file)
+                if query_count % 1000000 == 0:
+                    print "%s : query count = %s, connection table = %s" % (datestring, query_count, len (query_stream.mConnStatus))
+                    try:
+                        query_error_file = open("%s/query_error.log" % log_path, "a")
+                        query_error_file.write("%s query count = %s, connection table = %s \n" % (datestring, query_count, len (query_stream.mConnStatus)))
+                        query_error_file.close()
+                    except IOError:
+                        print ("can't write to file %s", query_error_file)
+
+            except Exception, error:
+                count = 0
+                # retry the same query 5 times
+                while count < 1:
+                    datestring = time.strftime ("%D %T").strip()
+                    # find out what the error was, log to file
+                    print "%s error #%s printing to socket: %s " % (datestring, count, tuple)
+                    print str(error)
+                    print "%s query count = %s, connection table = %s" % (datestring, query_count, len (query_stream.mConnStatus))
+
+                    try:
+                        query_error_file = open("%s/query_error.log" % log_path, "a")
+                        query_error_file.write("%s error #%s printing to socket: %s \n" % (datestring, count, tuple))
+                        query_error_file.write("%s \n" % str(error))
+                        query_error_file.write("%s query count = %s, connection table = %s \n" % (datestring, query_count, len (query_stream.mConnStatus)))
+                        query_error_file.close()
+                    except IOError:
+                        print ("can't write to file %s", query_error_file)
+                    # If we don't close and reopen the socket, it will stop accepting
+                    # writes after the first error.
+                    close_SB_socket(tcpSBSocket)
+                    time.sleep(2)
+                    tcpSBSocket = open_SB_socket()
+                    count = count+1
+                print "Skipping query ... \n"
+#                return 0
+            continue
+
+        continue
+
+
+
+
+
+
+            
+if __name__ == "__main__":
+    opts, args = getopt.getopt(sys.argv[1:], "", ["host="])
+
+    host = None
+    for o, a in opts:
+        if o in ("--host"):
+            host = a
+    if not host:
+        print "Specify a host using --host="
+        sys.exit(1)
+
+    # Start up the stream from the target host and create a file
+    # that we can hand to LLQueryStream
+    query_stream_file = remote_mysql_stream(host)
+    query_stream = LLQueryStream(query_stream_file)
+
+    watch_host(query_stream, host)
+
+

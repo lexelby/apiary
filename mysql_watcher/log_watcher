@@ -1,0 +1,186 @@
+#!/usr/bin/env python
+#
+# $LicenseInfo:firstyear=2010&license=mit$
+# 
+# Copyright (c) 2010, Linden Research, Inc.
+# 
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+# 
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+# 
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+# $/LicenseInfo$
+#
+
+"""
+Summarizes data collected by mysql_logger
+"""
+
+try:
+    import psyco
+    psyco.full()
+except:
+    pass
+
+import curses
+import curses.wrapper
+import getopt
+import os
+import re
+import socket
+import sys
+import time
+import traceback
+
+from indra.base import llsd
+from dblibs.dbutil import LLQueryStream, LLQueryStatMap, LLBinnedQueryStats, LLLogQueryStream, LLLogIter
+from dblibs.dbbrowser import *
+
+DISPLAY_INTERVAL = 5.0
+DUMP_INTERVAL = 360.0
+
+
+def watch_host(stdscr, host, query_metadata):
+    "Watches query traffic for a particular host.  Returns the overall query counts when exited by breaking"
+
+    #
+    # Options/parameters
+    #
+    output_path = "./" + host
+    # Generate a chronologically sorted list of all log files in the directory.
+    MAX_LOGS=36
+    log_files = []
+    for i in range(0, MAX_LOGS):
+        # Count down from the max and rename
+        n = MAX_LOGS - i
+        
+        log_filename = output_path + "/query.log.%d.gz" % n
+        if os.path.exists(log_filename):
+            log_files.append(log_filename)
+    
+    log_filename = output_path + "/query.log"
+    if os.path.exists(log_filename):
+        log_files.append(log_filename)
+
+    # Start listening to data stream
+    query_stream = LLLogQueryStream(LLLogIter(log_files))
+
+    # Curses configuration stuff
+    size = stdscr.getmaxyx()
+    stdscr.nodelay(True) # Non-blocking keyboard input
+
+    sort_by = "total_time"
+
+    count = 0
+    cur_time = 0
+    last_display_time = time.time()
+    last_dump_time = time.time()
+    last_count = 0
+    total_stats = LLQueryStatMap("Total", time.time())
+    binned_stats = LLBinnedQueryStats()
+    display_stats = total_stats
+
+    query_browser = LLQueryBrowser(stdscr, total_stats, query_metadata)
+
+
+    done = False
+    try:
+        while not done:
+            (event_type, query) = query_stream.getNextEvent()
+
+            if event_type == "QueryStart":
+                total_stats.queryStart(query)
+                binned_stats.queryStart(query)
+            elif (event_type == "QueryResponse"):
+                total_stats.queryResponse(query)
+                binned_stats.queryResponse(query)
+                count += 1
+            elif event_type == "Quit":
+                # Quit is an "instantaneous" query, both start and response
+                total_stats.queryStart(query)
+                total_stats.queryResponse(query)
+                binned_stats.queryStart(query)
+                binned_stats.queryResponse(query)
+                continue
+            elif event_type == None:
+                # no more data
+                # Open the next file
+                if len(log_files):
+                    query_stream 
+                time.sleep(0.01)
+
+            # Spam
+            if (0 == (count % 100)) or (None == event_type):
+                # Check keyboard input
+                c = 0
+                done = False
+                while -1 != c:
+                    c = stdscr.getch()
+                    if -1 == c:
+                        pass
+                    elif query_browser.handleKey(c):
+                        query_browser.redraw()
+                        pass
+                    elif c == ord('q'):
+                        # Quit
+                        done = True
+                        break
+                    elif c == ord(' '):
+                        # Switch which bins we're displaying
+                        query_browser.setQueryMap(display_stats)
+                        query_browser.redraw()
+                    elif c == ord('d'):
+                        # Dump output
+                        total_stats.dumpTiming("%s/query_timing.txt" % output_path)
+                        total_stats.dumpLLSD("%s/query_dump.llsd" % output_path)
+                        binned_stats.dumpTiming(output_path)
+                        binned_stats.dumpLLSD(output_path)
+                    else:
+                        print "Pressed key %s" % c
+
+                cur_time = time.time()
+                if (cur_time - last_display_time > DISPLAY_INTERVAL):
+                    last_display_time = cur_time
+                    last_count = count
+                    query_browser.setQueryMap(display_stats)
+                    query_browser.redraw()
+                if (cur_time - last_dump_time > DUMP_INTERVAL):
+                    last_dump_time = cur_time
+                    total_stats.dumpTiming("%s/query_timing.txt" % output_path)
+                    total_stats.dumpLLSD("%s/query_dump.llsd" % output_path)
+                    binned_stats.dumpTiming(output_path)
+                    binned_stats.dumpLLSD(output_path)
+    except:
+        traceback.print_exc()
+
+    total_stats.dumpTiming("%s/query_timing.txt" % output_path)
+    total_stats.dumpLLSD("%s/query_dump.llsd" % output_path)
+
+
+if __name__ == "__main__":
+    opts, args = getopt.getopt(sys.argv[1:], "", ["host="])
+
+    host = None
+    for o, a in opts:
+        if o in ("--host"):
+            host = a
+
+    if not host:
+        raise "No host specified"
+
+    query_metadata = LLQueryMetadata("./query_info.llsd")
+
+    #watch_host(None, host, query_metadata)
+    curses.wrapper(watch_host, host, query_metadata)

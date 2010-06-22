@@ -1,0 +1,370 @@
+#!/usr/bin/env python
+#
+# $LicenseInfo:firstyear=2010&license=mit$
+# 
+# Copyright (c) 2010, Linden Research, Inc.
+# 
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+# 
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+# 
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+# $/LicenseInfo$
+#
+
+"""
+Generate info about queries based on the tables that are involved
+"""
+import os.path
+if os.path.exists("../setup-path.py"):
+    execfile("../setup-path.py")
+import getopt, sys
+
+import copy
+import curses
+import curses.textpad
+import curses.wrapper
+import string
+import sys
+
+from indra.base import llsd
+from dblibs.dbutil import *
+from dblibs.dbbrowser import *
+from dblibs.dbmonitor import *
+
+USER = "foo"
+PASSWORD = "bar"
+
+def dump_table_summary(table_info):
+    # Dump a summary suitable for use in excel summarizing table usage
+    # Sort tables by total time used
+    sorted_keys = sort_table_by_field(table_info, 'total_time')
+    sorted_keys.reverse()
+
+    out_str = ""
+    # Print header
+    out_str += "Table\tNumQueries\tTotalTime\tQPS\tsecs/query\tUniqueQueries\tJoins\n"
+    for table in sorted_keys:
+        join_str = " ".join(table_info[table]['joins'])
+        out_str += "%s\t%d\t%.2f\t%.2f\t%.3f\t%d\t%s\n" % (table,
+                                                           table_info[table]['num_queries'],
+                                                           table_info[table]['total_time'],
+                                                           table_info[table]['qps'],
+                                                           table_info[table]['avg_time'],
+                                                           len(table_info[table]['queries']),
+                                                           join_str)
+    return out_str
+
+
+def dump_query_summary(table_info):
+    # Dump detailed query information, sorted by joins
+    # Sort tables by total time used
+    sorted_keys = sort_table_by_field(table_info, 'total_time')
+    sorted_keys.reverse()
+
+    out_str = ""
+    # Print header
+    out_str += "Tables\tNumQueries\tTotalTime\tQPS\tsecs/query\tUniqueQueries\tJoins\n"
+    for table in sorted_keys:
+        # Iterate through query stats for each table
+        query_list = table_info[table]['queries']
+        for query in query_list:
+            out_str += "%s\t%d\t%.2f\t%.2f\t%.3f\t%d\t%s\n" % (table,
+                                                               query['num_queries'],
+                                                               query['total_time'],
+                                                               table_info[table]['qps'],
+                                                               table_info[table]['avg_time'],
+                                                               len(table_info[table]['queries']),
+                                                           join_str)
+    return out_str
+
+def dump_graphviz(table_info):
+    # Create a graphviz file with the relationships between tables
+    # Create a list of all joins
+    # Uniquely identify joins
+    join_map = {}
+    for table in table_info:
+        for join_table in table_info[table]['joins']:
+            pair = ['"' + table + '"',
+                    '"' + join_table + '"']
+            pair.sort()
+            join_str = " -- ".join(pair)
+            join_map[join_str] = 1
+    joins = join_map.keys()
+    joins.sort()
+
+    out_str = ""
+    for join in joins:
+        out_str += join + "\n"
+
+
+def dump_table_detail(table):
+    out_str = ""
+    out_str += "%s: %d queries, %.2f seconds, %.2f QPS, %.2f secs/query\n" % (table['name'],
+                                                                              table['num_queries'],
+                                                                              table['total_time'],
+                                                                              table['qps'],
+                                                                              table['avg_time'])
+    join_str = " ".join(table['joins'])
+    out_str += "Joins: " + join_str + "\n"
+    out_str += '----------------------------------------\n'
+    # Sort the queries by total time
+    queries = table['queries']
+    queries.sort(lambda x, y: cmp(x['total_time'], y['total_time']))
+    queries.reverse()
+    for query in queries:
+        out_str += "%0.2f\t%d\t%0.2f\t%s\n" % (query['total_time'], query['num_queries'], query['num_queries']/elapsed, query['query_clean'])
+    return out_str
+
+
+def load_db_info(fn):
+    # Read in the database information from the LLSD document
+    f = open(fn, "r")
+    in_str = f.read()
+    f.close()
+    dbs = llsd.LLSD.parse(in_str)
+    return dbs
+
+def prepend_database(dbs, in_tn):
+    # prepend the database name if it's not in the string.
+
+    # Already has a database name, return
+    if in_tn.find(".") != -1:
+        return in_tn
+
+    # Search for the table name inside all the dbs
+    for db in dbs.keys():
+        for table in dbs[db]['tables'].values():
+            if table['Name'] == in_tn:
+                return db+"."+table['Name']
+    #print "Unknown table!"
+    return in_tn
+
+def find_db_from_query(dbs, query):
+    tables = get_query_tables(query)
+    for table in tables:
+        # Already has a database name, skip - we can't figure out the database from this table
+        if table.find(".") != -1:
+            continue
+
+        # Search for the table name inside all the dbs
+        for db in dbs.keys():
+            for db_table in dbs[db]['tables'].values():
+                if db_table['Name'] == table:
+                    return db
+    #print "Failed, tables:", tables
+    return None
+
+def generate_explains(db_host, user, password):
+    # Open up a database connection
+    dbm = DBMonitor(db_host, user, password)
+
+    explain_results = {}
+    # Let's try explaining a bunch of these queries
+    for query in query_info:
+        db = find_db_from_query(dbs, query['query'])
+        #print db
+        #print query['query_clean']
+        exp = dbm.explain(db, query['query'])
+        if not exp:
+            continue
+
+        # Map keys must be strings in order to be valid LLSD
+        qc = query['query_clean']
+        if not qc:
+            qc = ''
+        explain_results[qc] = exp
+
+    # Dump the explains info into a file
+    f = open("query_explain.llsd", "w")
+    f.write(str(llsd.LLSD(explain_results)))
+    f.close()
+    
+
+def load_explains(fn):
+    try:
+        f = open(fn, 'r')
+        in_str = f.read()
+        f.close()
+        explains = llsd.LLSD.parse(in_str)
+    except:
+        explains = {}
+    return explains
+
+def sort_table_by_field(d, field):
+    "Returns the keys of dictionary d sorted by the value in the field"
+    items=d.items()
+    backitems=[ [v[1][field],v[0]] for v in items]
+    backitems.sort()
+    return [ backitems[i][1] for i in range(0,len(backitems))]
+
+def total_sort(a, b):
+    # Sort by total time, descending order
+    if  a['total_time'] < b['total_time']:
+        return 1
+    elif a['total_time'] > b['total_time']:
+        return -11
+    return 0
+
+if __name__ == "__main__":
+    path = sys.argv[1]
+
+    # Read in LLSD query information
+    in_file = open(path)
+    in_string = in_file.read()
+    in_file.close()
+    in_llsd = llsd.LLSD.parse(in_string)
+    session_metadata = in_llsd[0]
+    query_info = in_llsd[1]
+
+    description = session_metadata['description']
+    elapsed = session_metadata['last_time'] - session_metadata['start_time']
+
+    # Read in database information
+    dbs = load_db_info("db_info_mysql.agni.lindenlab.com.llsd")
+
+    if 0:
+        do_explain = 0
+        if do_explain:
+            generate_explains('slave.mysql.agni.lindenlab.com', USER, PASSWORD)
+
+        # Load explain information from the database
+        explains = load_explains("./query_explain.llsd")
+
+        extras = {}
+        # Iterate through the explains rows, and figure out what sucks
+        for exp in explains.items():
+            for raw_exp in exp[1]['raw_explain']:
+                extra = raw_exp['Extra']
+                if not extra in extras:
+                    extras[extra] = {}
+                    extras[extra]['count'] = 0
+                    extras[extra]['queries'] = {}
+                extras[extra]['count'] += 1
+                extras[extra]['queries'][exp[0]] = exp
+
+        # Find every query that's a temporary or filesort
+        file_temp_queries = {}
+        for extra in extras.items():
+            if (extra[0].find('file') == -1) and (extra[0].find('temp') == -1):
+                continue
+            #print extra[0], extra[1]['count']
+            #print '-----------------------------'
+            for exp in extra[1]['queries'].items():
+                query_clean = exp[0]
+                # Look up the query in our query stats
+                if not query_clean in file_temp_queries:
+                    file_temp_queries[query_clean] = extra[0]
+                count = 0
+                total_time = 0.0
+                for query in query_info:
+                    if query['query_clean'] == query_clean:
+                        count += query['num_queries']
+                        total_time += query['total_time']
+                avg_time = total_time / count
+                #print "%d %.2f %.4f %s" % (count, total_time, avg_time, query_clean)
+            #print
+            #print
+
+        # Sort file/tmp queries by total execution time
+        bad_q_list = []
+        for query in query_info:
+            qc = query['query_clean']
+            if not qc in file_temp_queries:
+                # Skip ones that aren't filesorts or temp tables
+                continue
+            query['Extra'] = file_temp_queries[qc]
+            bad_q_list.append(query)
+
+        # Sort the bad q list by total_time
+        #print "Total time\tCount\tQPS\tExtra\tHost\tQuery_clean"
+        bad_q_list.sort(total_sort)
+        for query in bad_q_list:
+            print "%.2f\t%d\t%.2f\t%s\t%s\t%s\t" % (query['total_time'],
+                                              query['num_queries'],
+                                              query['num_queries']/elapsed,
+                                              query['Extra'],
+                                              query['host_clean'],
+                                              query['query_clean'])
+
+    join_table_info = {}
+    table_info = {}
+    no_table_queries = []
+    for query in query_info:
+        if not query['tables']:
+            no_table_queries.append(query['query_clean'])
+
+        # Get all tables, and clean them up to have databases prepended
+        dirty_tables = get_query_tables(query['query_clean'])
+        tables = []
+        join_tables = []
+        for table in dirty_tables:
+            tables.append(prepend_database(dbs,table))
+        if len(tables):
+            print "Tables:", tables
+            tables.sort()
+            join_tables.append(','.join(tables))
+        else:
+            join_tables.append('None')
+        #query['tables'] = copy.deepcopy(tables)
+        query['tables'] = copy.deepcopy(join_tables)
+
+        # Iterate through tables associated with the query, and aggregate statistical data
+        # and append query to list
+        for table in query['tables']:
+            if not table in table_info:
+                table_info[table] = {}
+                table_info[table]['name'] = table
+                table_info[table]['num_queries'] = 0
+                table_info[table]['total_time'] = 0.0
+                table_info[table]['joins'] = {}
+                table_info[table]['queries'] = []
+            table_info[table]['queries'].append(query)
+            table_info[table]['num_queries'] += query['num_queries']
+            table_info[table]['total_time'] += query['total_time']
+        # Keep count of joins on a per-table basis
+        for table1 in query['tables']:
+            for table2 in query['tables']:
+                if table2 != table1:
+                    if not table2 in table_info[table1]['joins']:
+                        table_info[table1]['joins'][table2] = 0
+                    table_info[table1]['joins'][table2] += 1
+
+    # Generate stats for the tables
+    for table in table_info.keys():
+        table_info[table]['qps'] = table_info[table]['num_queries']/elapsed
+        table_info[table]['avg_time'] = table_info[table]['total_time']/table_info[table]['num_queries']
+
+    f = open("./table_stats.txt","w")
+    f.write(dump_table_summary(table_info))
+    f.close()
+
+    dump_graphviz(table_info)
+
+    # Sort tables by total time used
+    sorted_keys = sort_table_by_field(table_info, 'total_time')
+    sorted_keys.reverse()
+
+    out_str = ""
+    for table in sorted_keys:
+        out_str +=  dump_table_detail(table_info[table])
+        out_str += "\n"
+    out_str += "No table\n"
+    out_str += '----------------------------------------\n'
+    for query in no_table_queries:
+        out_str += query + '\n'
+    f = open("./table_details.txt", "w")
+    f.write(out_str)
+    f.close()
