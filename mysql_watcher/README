@@ -1,1 +1,216 @@
-"Current" documentation for these tools and libraries lives in the wiki at: https://wiki.lindenlab.com/wiki/MySQL_Monitoring_Tools
+This documentation was pulled from Linden Lab's internal wiki, and needs some exhaustive cleanup. - Doug
+
+
+== Tools ==
+=== "Current" Tools ===
+To use them you should be able to check out the directory and run them on any host.  They should NOT be run from the database host that is being monitored.
+* mysql_watcher - connects to a live mysql host and processes the incoming query packet stream in real time, displaying it through a curses UI.
+* mysql_logger - connects to a live mysql host and processes the incoming query stream, putting the resulting stream of query information into a set of log files.
+* log_watcher - replays a set of logs created by mysql_logger and generates statistics (in theory - it's definitely buggy).
+* browse_queries - script that allows you to view the summarized output of the watcher scripts in curses.
+* db_info - tiny script that gets statistics about tables and databases on a database host.
+* table_info - hacky script that reads in summary information created by the watcher scripts, and generates statistics and other output based on table names.
+
+The following tools are not "modern", and should not be used as examples for future development, except at a very basic level.
+=== "Legacy" Tools ===
+These are tools that haven't been migrated from the "old" location for scaling scripts at svn+ssh://svn.lindenlab.com/svn/release/scripts/scaling.  It would be good to get these migrated if possible.
+* traffic_watcher - generically watches traffic for a host, breaks down by protocol and "Linden" destinations
+* message_watcher - watches the packet stream for a host, and identifies Linden-related traffic by protocol (and in the case of UDP, message name).
+
+== Libraries ==
+=== Current ===
+** /dblibs - Database utility libraries are located here.
+*** /dblibs/dbmonitor.py - utility library to do "safe" batch operations on production databases with slaves.
+*** /dblibs/dbutil.py - library for processing and gathering statistics on mysql TCP streams
+*** /dblibs/dbbrowser.py - curses-based query browsing tools
+
+
+== Applications ==
+** mysql_watcher - real-time MySQL query stats collector/browser
+** mysql_logger - log all SQL queries to rotating 36 hour compresssed log
+** browse_queries - browse/edit query metadata
+** query_info.llsd - query metadata file
+== Basic Implementation ==
+* The various tools spawn off an ssh to the target hosts that runs tcpdump and pipes the results using netcat over the network to a server socket.
+* LLQueryStream is a class that reads a tcpdump stream (as a file), and generates events that correspond to queries/other events (QueryStart, QueryResponse, Quit).  All the tools hook up the incoming tcpdump stream to the LLQueryStream class.
+* The server sockets run a while loop around LLQueryStream.getNextEvent(), and shove the results into a query stats class LLQueryStatMap which collects statistics.
+* Every once in a while, LLQueryBrowser is used to handle keyboard input and redraw the screen.
+== Bugs/Improvements ==
+=== Core Libraries ===
+* Make conform to Python coding standards
+* Improved query generalizer/parser
+* Handle non-UTF8 queries better (affects dumping LLSD files)
+* Improve performance (high CPU load can sometimes cause dropped packets in the stream)
+* Handle dropped packets better (can cause stats)
+* Improve long-term running (accumulated bad connections/queries causes memory/performance bloat)
+* Track actual response data transmission time, not just initial response time
+=== Curses/Tools ===
+* Make conform to Python coding standards
+* No help to speak of
+* Handle resize
+* Multi-line editor sucks
+* Display more statistical data (total queries/sec, time/sec)
+== New Features/Tools ==
+* Allow metadata editing while watching live stream
+* Watch and flag unknown queries crossing the wire (intrusion detection)
+* Look for non-Unicode data in the query stream
+* Store historical query traffic in a meaningful way
+* Real visualization tools
+* Drill-downs to watch specific queries
+
+
+
+= mysql_watcher =
+
+
+mysql_watcher is a script written in python which monitors database traffic on databases by reading a tcpdump packet stream.  It collects various statistical and logging information, and displays the information using curses.
+
+See [[MySQL Monitoring Tools]] For the toolkit that I used to implement this.  There are also other related database and network monitoring tools.
+
+== Usage ==
+
+=== Running ===
+'''DO NOT run this on the database host itself.  It talks to the database over the network, so you should run it on a fast, non-critical production host, preferably in the same colo facility.'''
+
+Arguments:
+* --host=<mysql_host> - the mysql host you wish to monitor.  You will need to make sure you have root access (it logs in as root so it can run tcpdump without sudoing).
+
+So, to monitor mysql.agni, I run "./mysql_watcher --host=mysql.agni".
+
+You will want to use a fairly large terminal window - I haven't taken the time to make curses work 100% properly yet, and if your window is too small there's a good chance that it will crash when attempting to display some of the longer strings.
+
+Notes:
+* If you're running against mysql.agni (or another similarly high-traffic database), I'd recommend a class 3 or higher.  This currently burns 60-70% of a CPU on a class 3 running against mysql.agni
+* The query logging can take a LOT of disk space - possibly a megabyte a minute against mysql.agni.
+* You almost definitely do not want to be running more than one of these against a particular DB at any time - it uses about 4% of a CPU between tcpdump and netcat.
+
+=== Output ===
+<pre>
+Total
+QPS: 1956.19    Elapsed: 4642.90
+ TotalSec  AvgSec   Count   QPS Host      Query                                                       Notes
+----------------------------------------------------------------------------------------------------------------
+ 11827.02  0.0120  983071 211.7 sim       SELECT u.agent_id as agent_id, u.im_via_email as im_via_ema store_instant_messa
+ 10708.46  0.0084 1269642 273.5 sim       SELECT count(*) FROM script_email_message WHERE script_id = script email delive
+  8286.53  0.1054   78625  16.9 sim       SELECT g.name, g.charter, g.member_title, hex(g.member_powe Group profile infor
+  7268.40  0.0335  216983  46.7 sim       SELECT g.group_id FROM groups g, user_groups_map ugm WHERE  get_groups_list: Gr
+  7206.51  0.0332  216916  46.7 sim       SELECT g.group_id as group_id, g.name as group_name, hex(ug get_groups_data, fr
+  5201.93  0.5598    9292   2.0 sim       SELECT s.region_id, s.grid_x, s.grid_y, s.sim_name, s.sim_c simulator startup
+  4641.38  0.4464   10397   2.2 web       SELECT * FROM user_last_name WHERE (availability = *string* none
+  4073.26  0.0549   74254  16.0 login     SELECT r.agent_related AS buddy_id,r.agent_id_rights as bud Friends list on log
+  3029.89  0.0344   88053  19.0 sim       SELECT g.group_id as group_id, g.name as group_name, hex(ug
+  2621.76  0.2095   12513   2.7 web       select count(*) as total from simulator s, estate e where s
+  2576.30  0.0128  201496  43.4 sim       SELECT u.agent_id, u.limited_to_estate, u.god_level, v.desc
+  2439.34  1.1517    2118   0.5 web       SELECT DISTINCT p.parcel_id, p.name, s.sim_name, p.grid_x,
+  2231.35 14.9755     149   0.0 vega      DELETE FROM indra.money_transaction WHERE transaction_time
+  2157.60  0.0058  372079  80.1 sim       SELECT u.money, u.square_meters_credit, IFNULL(SUM(p.billab query_balance: get
+  1913.40  0.3638    5260   1.1 web       SELECT IFNULL(SUM(cot.sell_net_usd * *num*),*num*) as total Lindex query?
+  1913.07  0.0258   74238  16.0 login     SELECT g.group_id AS group_id, g.name AS group_name, hex(ug none
+  1885.45  0.0298   63326  13.6 login     REPLACE INTO known_address SET agent_id = *uuid*, ip_string known address looku
+  1884.30  0.0639   29501   6.4 sim       SELECT m.agent_id as agent_id, m.donated_square_meters as d none
+  1832.59  0.0084  216925  46.7 sim       SELECT image_id, about, want_to_mask, want_to, skills_mask, get_avatar_properti
+  1785.39  0.8422    2120   0.5 web       select customer_id from customer_activation where activatio
+
+Clean Query: sim
+SELECT u.agent_id as agent_id, u.im_via_email as im_via_email, u.email as email, u.enabled as enabled, CONCAT(u.username, *string*, l.name) as nam
+e, u.limited_to_estate
+
+Sample Query: sim
+SELECT u.agent_id as agent_id, u.im_via_email as im_via_email, u.email as email, u.enabled as enabled, CONCAT(u.username, ' ', l.name) as name, u.
+limited_to_estate as limited_to_estate, u.god_level as god_level, u.inventory_host_name as inventory_host_name FROM user u, user_last_name l  WHER
+E u.last_name_id = l.last_name_id AND u.agent_id in ('6f53dc02-d75b-4542-b606-767275596735', '7ab025d4-eb5c-4113-a859-22039839dacb')
+
+
+
+
+
+Tables:   ['user', 'user_last_name']
+Columns:
+Notes:
+store_instant_message: user info lookup for IM delivery
+</pre>
+=== Keyboard shortcuts ===
+* ''<space>'' - toggles between the last 5 second view versus all stats collected since the run started.
+* ''<up, down, pg up, pg dn>'' - navigates the selected query up and down the screen.
+* ''s'' - changes which column is being sorted by.
+* ''q'' - quit the application (and dump data)
+
+==== On-disk output for mysql_logger ====
+* <output_path>/query.log - a log of every query that is being run on the database.  The output format is:
+<pre>
+<unixtime> <hostname>
+<query string>
+**********************
+<unixtime> <hostname>
+<query string>
+**********************
+.
+.
+.
+</pre>
+* <output_path>/query_timing.txt - detailed version of the stdout stats, dumped every hour.
+* <output_path>/query_counts.llsd - LLSD dump used for merge_tables.
+'''Currently <output_path> is hardcoded as ./<hostname>/ - sorry.'''
+== Old documentation ==
+Update: mysql_watcher now has a companion script merge_table that merges useful metadata.
+
+<pre>
+Locations of scripts:
+
+All of the database scripts that I use reside here:
+svn+ssh://svn.lindenlab.com/linden/release/scripts/scaling
+
+mysql_watcher is the script that you want to use to gather real-time data.  You'll need the root ssh key added to run it (so it can run tcpdump on the database machine).  You'll also want to run it on a fairly beefy box - the stations don't have quite enough juice to run it when mysql.agni is going full tilt.  You may have to export PYTHONPATH if you're not running on a box with a code deploy.
+
+Run it using the command "mysql_watcher mysql.agni.lindenlab.com".  It does some stuff with popen, so it seems to misbehave sometimes when the output is piped, and I haven't had time to fix it yet.
+
+When you break out, it generates raw output in two files:
+- query_info_dump.llsd
+- query_counts.llsd
+
+The next step is to merge this count data with the metadata in query_info.llsd using merge_tables - which generates text and HTML output.
+
+query_info.llsd is an LLDS document that contains a list of all known queries, and currently has a map with metadata (human-editable) such as the host which called it, notes, and the tables accessed.  When merge_tables is run, it takes this metadata and merges it with the counts so that you don't have to do it by hand every time.  Check this file into svn whenever you make updates or tweaks to it.
+
+Known issues:
+- If a query comes from multiple classes of hosts, the merge_tables script will currently ignore the data from the host which generated less queries.  This could result in query counts which are less than expected.
+
+- merge_tables currently attempts to scp the HTML version into my public_html folder in my homedir, which obviously won't work for you.
+
+- Because this isn't a heavily tested script, merge_tables won't automatically generate a new version of query_info.llsd when it encounters new queries it hasn't seen before.  You'll want to edit the script to set the merge_query_info variable to True.
+
+The cool thing that I want to do which I haven't done yet to these scripts is to put metadata for how expensive a query is into the query_info.llsd file - that way we can generate good weightings for how much individual queries are affecting the DB, and even do lookups in the metadata to figure out what's hurting us in real time.
+
+Let me know if you have more questions.
+
+- Doug
+</pre>
+
+mysql_watcher is a script that parses the results of tcpdump on a mysql host, and generates real-time statistical output of what queries are running on the host.  It currently lives in svn in /linden/scripts/scaling/mysql_watcher.  The following are the docs that I wrote at the top of the script:
+
+<pre>
+Reads the input of a tcpdump stream using -s 0 -A, and generates either real-time information
+or summary information.
+
+On the server (NOT the database, but something like a station) (which will be reading the stream), run:
+
+doug@station0$ nc -l -p 9999 | /usr/sbin/tcpdump -r - -A -s 0 | ./mysql_watcher
+
+This listens to data using netcat on port 9999, and feeds it through tcpdump which parses it into a format
+that mysql_watcher likes.
+
+On the client (on the mysql database host), run:
+
+doug@mysql.agni$ sudo /usr/sbin/tcpdump -n -s 0 -w - -i eth0 port 3306 and dst host db2c6 | nc station0 9999
+
+This takes the tcpdump raw packet output and shoves it to the server on station0, running on port 9999.
+
+On the station0 host it will output every 5 seconds the top queries (currently 50 of them).  On breaking out
+of the server, it will dump a summary of ALL of the queries.
+
+At some point in the future this will be made more glamorous, and less finicky, but this works.
+</pre>
+
+Further improvements include adding command line parameters, and using curses to allow you to interact with and tweak the output.  Also, using popen and/or llspawner to automatically open up all of the pipes to make it all easier.
+
+'''Note:  You will probably want to verify that nobody else is running this at the time.  It only seems to generate around 3% load on mysql.agni running near peak, but...'''
