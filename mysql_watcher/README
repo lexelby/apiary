@@ -1,5 +1,11 @@
 This documentation was pulled from Linden Lab's internal wiki, and needs some exhaustive cleanup. - Doug
 
+mysql_watcher contains a set of tools which monitor, analyze and log
+database traffic on MySQL databases by reading a tcpdump packet stream
+and parsing it.  It is particularly useful as a low-impact means of
+profiling load on high-volume MySQL hosts in real-time, providing
+statistical information on queries that tools such as mytop and
+innotop lack.
 
 == Tools ==
 === "Current" Tools ===
