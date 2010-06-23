@@ -4,11 +4,11 @@ SUMMARY
 apiary is a distributed, protocol-independent load testing framework, written
 in Python, that replays captured queries, simulating production load patterns.
 
-A beekeeper process feeds sequences of one or more queries into an AMQP queue,
-and one or more workerbee processes retrieve sequences from the queue, send the
-associated queries to the specified target host, and report their results to
-the queenbee to be tallied.  The beekeeper prints a summary of the progress
-every 15 seconds and when all the workerbees are done.
+A QueenBee process feeds sequences of one or more messages into an AMQP queue,
+and one or more WorkerBee processes retrieve sequences from the queue, send the
+associated messages to the specified target host, and report their results to
+the BeeKeeper to be tallied.  The QueenBee prints a summary of the progress
+every 15 seconds and when all the WorkerBees are done.
 
 
 REQUIREMENTS
