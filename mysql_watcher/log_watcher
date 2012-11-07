@@ -44,7 +44,7 @@ import sys
 import time
 import traceback
 
-from indra.base import llsd
+from llbase import llsd
 from dblibs.dbutil import LLQueryStream, LLQueryStatMap, LLBinnedQueryStats, LLLogQueryStream, LLLogIter
 from dblibs.dbbrowser import *
 

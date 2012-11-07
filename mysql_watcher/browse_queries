@@ -15,7 +15,7 @@ import string
 import sys
 import time
 
-from indra.base import llsd
+from llbase import llsd
 from dblibs.dbbrowser import *
 
 def sort_by_field(d, field):

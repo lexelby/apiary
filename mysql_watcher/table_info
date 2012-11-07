@@ -39,7 +39,7 @@ import curses.wrapper
 import string
 import sys
 
-from indra.base import llsd
+from llbase import llsd
 from dblibs.dbutil import *
 from dblibs.dbbrowser import *
 from dblibs.dbmonitor import *

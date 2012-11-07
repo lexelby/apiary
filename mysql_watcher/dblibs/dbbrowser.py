@@ -28,7 +28,7 @@
 import curses
 import os
 
-from indra.base import llsd
+from llbase import llsd
 from dbmonitor import LLQueryStatMap, asciify
 
 def edit_list(win, l, text):

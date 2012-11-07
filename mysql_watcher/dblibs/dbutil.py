@@ -41,7 +41,7 @@ import struct
 import sys
 import time
 
-from indra.base import llsd
+from llbase import llsd
 
 def asciify(str):
     "Lame ASCIIfication of a string to keep various things from barfing"

@@ -41,7 +41,7 @@ import logging.handlers
 from types import *
 
 from dblibs.dbmonitor import DBMonitor
-from indra.base import llsd
+from llbase import llsd
 
 USER = "foo"
 PASSWORD = "bar"
