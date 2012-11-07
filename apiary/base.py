@@ -294,7 +294,7 @@ class BeeKeeper(object):
             debug('worker-stopped: now %d workers.',
                   self._workercount)
             assert self._workercount >= 0
-            if self._shutdownphase:
+            if self._shutdownphase and self._workercount == 0:
                 self.stop(msg)
             return
         else:
