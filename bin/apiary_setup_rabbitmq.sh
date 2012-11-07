@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 #
 # $LicenseInfo:firstyear=2010&license=mit$
 # 
