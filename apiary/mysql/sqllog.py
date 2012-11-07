@@ -118,11 +118,12 @@ class CoalescedEvent(Event):
         self.lasttime = event.time
         if self.shelf_life:
             self.staletime = self.lasttime + self.shelf_life
-        if not event.state == Event.End:
-            self.body += "%s:%s\n+++\n" % (event.time, event.body) 
-        else:
+        if event.state == Event.End:
             self.body += "%s:Quit\n+++\n" % (event.time)
             self.ended = True
+        elif event.state == Event.Query:
+            self.body += "%s:%s\n+++\n" % (event.time, event.body) 
+        # Ignore Event.QueryResponse, because we only care about queries sent.
     
     def endIfNeeded(self):
         if not self.ended:
