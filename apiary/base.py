@@ -405,10 +405,11 @@ class QueenBee(object):
 
         return False if there are no more events, True otherwise
         """
+        raise NotImplemented("next() method should be implemented in child class")
 
     def result(self, seq, data):
         """The result returned by the workerbee"""
-        pass
+        raise NotImplemented("result() method should be implemented in child class")
         
     # methods that are sent by subclasses, from next()
     
@@ -505,11 +506,11 @@ class WorkerBee(object):
     
     def start(self):
         """start of a sequence of events"""
-        pass
+        raise NotImplemented("start() method should be implemented by child class")
     
     def event(self, data):
         """an event in a sequence"""
-        pass
+        raise NotImplemented("event() method should be implemented by child class")
     
     def end(self):
         """the end of a sequence"""
