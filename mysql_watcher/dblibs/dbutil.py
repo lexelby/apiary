@@ -1018,7 +1018,7 @@ def start_dump(host, port):
     interface = "eth0"
     
     # Start up tcpdump pushing data into netcat on the sql server
-    SRC_DUMP_CMD = "ssh root@%s '/usr/sbin/tcpdump -n -s 0 -w - -i %s dst port 3306 or src port 3306 | nc %s %d'" \
+    SRC_DUMP_CMD = "ssh root@%s '/usr/sbin/tcpdump -p -n -s 0 -w - -i %s dst port 3306 or src port 3306 | nc %s %d'" \
                    % (host, interface, socket.getfqdn(), port)
     os.popen2(SRC_DUMP_CMD, "r")
 
