@@ -42,7 +42,7 @@ __all__ = [
         'CoalesceSequences'
     ]
 
-headerRE = re.compile(r'^(\d+\.\d+)\t([\d.:]+)\t(\S+)\t(\w+)$')
+headerRE = re.compile(r'^(?P<time>\d+\.\d+)\t(?P<id>[\d.:]+)(\t(?P<source>\S+))?\t(?P<state>\w+)$')
 breakRE = re.compile(r'^\*{3,}$')
 commentRE = re.compile(r'^\-{2,}.*$')
 
@@ -141,7 +141,10 @@ def parse_stanza(input):
         if commentRE.match(line): # catch comments before the headers
             line = input.readline() # Skip the line
         match = headerRE.match(line)
-    (time, id, source, state) = match.groups()
+    time = match.group('time')
+    id = match.group('id')
+    source = match.group('source')
+    state = match.group('state')
     
     body = ''
     while True:
