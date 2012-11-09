@@ -22,8 +22,8 @@ http://codespeak.net/svn/user/arigo/hack/misc/lsprof/
 * py-amqplib (only tested with an implementation of the 0-8 spec)
 http://hg.barryp.org/py-amqplib/file/
 
-* maatkit
-http://maatkit.org/
+* maatkit or percona-toolkit (either may be available in your Linux distribution)
+http://www.percona.com/software/percona-toolkit
 
 
 RABBITMQ SETUP
@@ -40,24 +40,23 @@ the appropriate permissions.  This must be run as root.
 SAMPLE OUTPUT
 -------------
 
-To see sample output from apiary, execute the following:
+To see sample output from apiary, you can run apiary in --no-mysql mode.
 
-    sh bin/run-apiary.sh
+First, start up some worker bees:
 
-If you don't have RabbitMQ running on localhost, you can modify AMQPHOST in the
-file above before running it.  The initial output should look something like:
+  $ bin/apiary -f 10 --protocol mysql --no-mysql
 
-    Starting workerbee on localhost
-    Starting beekeeper process
-    Initializing QueenBee
+Next, run the queen bee:
 
-At that point, sequences should be inserted into the queue, and workers should
-begin pulling them and issuing them against the configured target system.  A
-summary of the results will be printed when all of the sequences have been
-issued.  The default version of run-apiary.sh will generate fake, positive
-responses from a SQL server, so you do not need a SQL server running to see
-what the output of apiary looks like.
+  $ bin/apiary --queenbee --protocol mysql doc/examples/example-good-sequences.log
 
+Apiary will pretend to run the queries in the sequence file, and after a few tens
+of seconds, you'll see the sample output.  The --no-mysql switch causes the
+worker bees not to connect to MySQL and to return '200 OK' responses.
+
+If you don't have RabbitMQ running on localhost, you'll need to specify --amqp-*
+options on both the worker bee and queen bee command lines.  Run bin/apiary --help
+for documentation on these options.
 
 TUTORIAL
 --------
@@ -76,40 +75,28 @@ the root user.  Adapt the commands below appropriately if that is not the case.
 3. In a separate terminal, run a script that will generate some queries against
 the test data:
 
-    sh bin/run-demo-queries.sh
+    bin/run-demo-queries.sh
 
 4. Stop the tcpdump process that you started in step 2.
-5. Turn the tcpdump data into a query digest using maatkit:
+5. Turn the tcpdump data into a query digest using maatkit or percona-toolkit:
 
     mk-query-digest --type=tcpdump --no-report --print /tmp/tcpdump.out > /tmp/apiary_query_digest.txt
+
+Use pt-query-digest if you have percona-toolkit instead of maatkit.  They both work identically.
 
 6. Convert the query digest into a sequence file:
 
     PYTHONPATH=. python apiary/mysql/genseqs.py /tmp/apiary_query_digest.txt > /tmp/apiary_seq.txt
 
-7. Replace the COMMON_OPTS and BEEKEEPER_OPTS lines in bin/run-apiary.sh with:
+7. Run some worker bees:
 
-    COMMON_OPTS='--mysql-host=localhost --mysql-user=root --mysql-db=apiary_demo --timeout 30'
-    BEEKEEPER_OPTS='--beekeeper /tmp/apiary_seq.txt'
+    bin/apiary -f 10 --protocol mysql --mysql-host localhost --mysql-user root
 
-8. Run apiary:
+8. Run the queen bee:
 
-    sh bin/run-apiary.sh
+    bin/apiary --queenbee --protocol mysql /tmp/apiary_seq.txt
 
-9. You should see a summary of the results in a few seconds. 
+9. The queen bee will read the query sequences and push them into the worker-job queue.  The worker
+   bees will execute the jobs and return status back to the beekeeper running inside the queenbee process.
 
-
-SUPPORT
--------
-
-Documentation for apiary can be found in the apiary wiki:
-
-    http://hg.secondlife.com/apiary/wiki/Home
-
-You can direct any questions about apiary to the following mailing list:
-
-    apiary@lists.secondlife.com
-
-You can file bug reports or feature requests using the issue tracker at: 
-
-    http://hg.secondlife.com/apiary/issues/
+10. You should see a summary of the results in a few seconds. 
