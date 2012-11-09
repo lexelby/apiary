@@ -43,7 +43,7 @@ __all__ = [
         'CoalesceSequences'
     ]
 
-headerRE = re.compile(r'^(?P<time>\d+\.\d+)\t(?P<id>[\d.:]+)(\t(?P<source>\S+))?\t(?P<state>\w+)$')
+headerRE = re.compile(r'^(?P<time>\d+\.\d+)\t(?P<id>[\d.:]+)\t?(?P<source>\S*)\t(?P<state>\w+)$')
 breakRE = re.compile(r'^\*{3,}$')
 commentRE = re.compile(r'^\-{2,}.*$')
 timeRE = re.compile(r'^# Time: (\d+ [\d\w:.]+)$')
@@ -406,7 +406,7 @@ class CoalesceSequences(object):
                 self.age_out(c)
 
             if id not in connections:
-                c = connections[id] = CoalescedEvent(30.0, 180.0)
+                c = connections[id] = CoalescedEvent(300.0, 900.0)
                 c.add(e)
                 heapq.heappush(bytime, c)
             else:
