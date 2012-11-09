@@ -5,8 +5,6 @@ from os.path import dirname, abspath
 
 sys.path.append(dirname(dirname(abspath(sys.argv[0]))))
 
-print sys.path
-
 import apiary
 
 apiary.main()
