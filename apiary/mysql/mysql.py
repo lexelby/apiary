@@ -74,7 +74,7 @@ class MySQLWorkerBee(apiary.WorkerBee):
             return
 
         try:
-            if self._connection is None:
+            if self._connection is None and not self._no_mysql:
                 connection = MySQLdb.connect(**self._connect_options)
                 self._connection = connection
             pass
