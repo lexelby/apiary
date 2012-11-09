@@ -346,8 +346,9 @@ class BeeKeeper(object):
         print "waiting concurrency:", self._waiting_stats.format()
 
     def shutdown_phase(self, msg):
+        debug('received shutdown message: %s', msg.body)
         self._shutdownphase = True
-        if self._workercount > 0:
+        if self._workercount > 0 and msg.body != Messages.TerminateBeeKeeper:
             for w in range(self._workercount):
                 debug('sending %s %d/%d.',
                       Messages.StopWorker,
@@ -358,6 +359,7 @@ class BeeKeeper(object):
                     amqp_exchange,
                     'worker-job')
         else:
+            debug('stopping beekeeper')
             # We can stop immediately because we are not waiting for
             # any workers to shutdown:
             self.stop(msg)
@@ -468,6 +470,16 @@ class QueenBee(object):
         self.flush_results()
 
         self._send('beekeeper-end', Messages.StopBeeKeeper)
+        
+        start = time.time()
+        
+        while beekeeper_thread.is_alive():
+            time.sleep(1)
+            if time.time() - start >= 60:
+                debug('Some WorkerBees did not report back that they had halted; terminating beekeeper anyway.')
+                self._send('beekeeper-end', Messages.TerminateBeeKeeper)
+                break
+        
         beekeeper_thread.join()
 
         # close the queues
@@ -582,6 +594,7 @@ class Messages (object):
     WorkerHalted = 'worker-halted'
     StopWorker = 'stop-worker'
     StopBeeKeeper = 'stop-beekeeper'
+    TerminateBeeKeeper = 'terminate-beekeper'
 
 
 def add_options(parser):
