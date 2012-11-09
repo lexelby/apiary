@@ -26,6 +26,7 @@
 import heapq
 import re
 import sys
+import time
 
 from apiary.tools.debug import *
 from apiary.tools import mergetools
@@ -45,6 +46,11 @@ __all__ = [
 headerRE = re.compile(r'^(?P<time>\d+\.\d+)\t(?P<id>[\d.:]+)(\t(?P<source>\S+))?\t(?P<state>\w+)$')
 breakRE = re.compile(r'^\*{3,}$')
 commentRE = re.compile(r'^\-{2,}.*$')
+timeRE = re.compile(r'^# Time: (\d+ [\d\w:.]+)$')
+clientRE = re.compile(r'^# Client: ([\d.:]+)$')
+threadRE = re.compile(r'# Thread_id: (\d+)$')
+admin_commandRE = re.compile(r'^# administrator command: (\w+);$')
+query_log_commentRE = re.compile(r'^#')
 
 
 class Event(object):
@@ -133,31 +139,93 @@ class CoalescedEvent(Event):
 
 #@traced_func
 def parse_stanza(input):
+    
+    # This function is a bit gnarly because it can handle either the output of
+    # mk-query-digest or the output of mysql_watcher/mysql_logger.
+    #
+    # mk-query-digest parsing code borrowed from Dante Linden.
+    
+    seconds = 0
+    id = ''
+    source = ''
+    state = Event.Query
+    admin_command = ''
+    line = ''
+    body = ''
     match = None
-    while not match:
+    while not match and not query_log_commentRE.match(line):
         line = input.readline()
         if line == '':  # empty string means EOF
             return None
         if commentRE.match(line): # catch comments before the headers
             line = input.readline() # Skip the line
+        # parse the header in case it's a seq log
         match = headerRE.match(line)
-    time = match.group('time')
-    id = match.group('id')
-    source = match.group('source')
-    state = match.group('state')
     
-    body = ''
-    while True:
+    if match:
+        seconds = match.group('time')
+        id = match.group('id')
+        source = match.group('source') or ''
+        state = match.group('state')
+        
         line = input.readline()
-        if commentRE.match(line):
-            line = input.readline() # Skip the line
+
+    # if processing a mk-query-digest query log, extract info from comments
+    while query_log_commentRE.match(line):
+        if timeRE.match(line):
+            # if seconds, then you've hit another query in a digest log because
+            # the previous query had no body (i.e., the comments from one query
+            # border the comments for the next query)
+            if seconds:
+                # seek backward so we can process this timestamp as part of the
+                # next stanza
+                input.seek(-len(line), 1)
+                return Event(float(seconds), id, source, state, body)
+
+            timestamp = timeRE.match(line).groups()[0]
+            # convert timestamp into seconds since epoch:
+            # strip off subseconds, convert remainder to seconds, 
+            # append subseconds
+            date_time, subseconds = timestamp.split('.')
+            seconds = str(int(time.mktime(time.strptime(date_time, "%y%m%d %H:%M:%S")))) + ".%s" % subseconds
+        if clientRE.match(line):
+            id = clientRE.match(line).groups()[0]
+        if threadRE.match(line):
+            id += ':%s' % threadRE.match(line).groups(0)
+        if admin_commandRE.match(line):
+            admin_command = admin_commandRE.match(line).groups()[0]
+            if admin_command == "Quit":
+                state = Event.End
+    
+        line = input.readline()
         if line == '':
+            return None
+
+        
+    # we should be to the body of the stanza now 
+    while True:
+        while commentRE.match(line):
+            line = input.readline() # Skip the line
+        if line == '': # EOF
             break
         if breakRE.match(line):
             break
+        if query_log_commentRE.match(line):
+            break
         body += line
-    
-    return Event(float(time), id, source, state, body)
+        line = input.readline()
+
+    # any admin commands follow the body
+    if admin_commandRE.match(line):
+        admin_command = admin_commandRE.match(line).groups()[0]
+        if admin_command == "Quit":
+            state = Event.End
+    else:
+        # the last line we read was a comment.  seek backwards
+        # so that we see it the next time we read from input
+        input.seek(-len(line), 1)
+    #print "seconds=%s, id=%s, body=%s" % (seconds, id, body)
+    return Event(float(seconds), id, source, state, body)
     
 class Sequence(object):
     def __init__(self):
