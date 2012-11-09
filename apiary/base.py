@@ -64,8 +64,6 @@ amqp_vhost = '/apiary'
 amqp_exchange = 'b.direct'
 verbose = False
 
-amqp_queues = ['beekeeper-end', 'worker-status', 'worker-job']
-
 class TimeoutError(Exception):
     pass
 
@@ -283,6 +281,7 @@ class BeeKeeper(object):
     
     @traced_method
     def worker_status(self, msg):
+        debug("received worker status: %s" % msg.body)
         body = msg.body
         if body == Messages.WorkerNew:
             self._workercount += 1
@@ -446,8 +445,9 @@ class QueenBee(object):
     
     def main(self):
         self._transport.connect()
-        for queue in amqp_queues:
-            self._transport.queue(queue, clean=True)
+        self._transport.queue('beekeeper-end', clean=True)
+        self._transport.queue('worker-job', clean=True)
+        
 
         print "Initializing BeeKeeper"
         self._beekeeper = BeeKeeper(self._options)
@@ -563,6 +563,7 @@ class WorkerBee(object):
 
         while self._wait_for_more:
             self._transport._ch.wait()
+        debug("worker ended")
         self._transport.close()
         self._transport = None
 
