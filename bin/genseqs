@@ -1,3 +1,5 @@
 #!/bin/bash
 
-PYTHONPATH="$(dirname $0)/.." python apiary/mysql/genseqs.py "$@"
+APIARY_PATH="$(dirname $0)/.."
+
+PYTHONPATH="$APIARY_PATH" python $APIARY_PATH/apiary/mysql/genseqs.py "$@"

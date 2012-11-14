@@ -52,6 +52,23 @@ threadRE = re.compile(r'# Thread_id: (\d+)$')
 admin_commandRE = re.compile(r'^# administrator command: (\w+);$')
 query_log_commentRE = re.compile(r'^#')
 
+class EventFile(object):
+    def __init__(self, name):
+        if name == "-":
+            self._file = sys.stdin
+        else:
+            self._file = open(name, 'r')
+            
+        self._lines = []
+    
+    def readline(self):
+        if self._lines:
+            return self._lines.pop()
+        else:
+            return self._file.readline()
+    
+    def unreadline(self, line):
+        self._lines.append(line)
 
 class Event(object):
     # state values
@@ -179,7 +196,7 @@ def parse_stanza(input):
             if seconds:
                 # seek backward so we can process this timestamp as part of the
                 # next stanza
-                input.seek(-len(line), 1)
+                input.unreadline(line)
                 return Event(float(seconds), id, source, state, body)
 
             timestamp = timeRE.match(line).groups()[0]
@@ -223,7 +240,7 @@ def parse_stanza(input):
     else:
         # the last line we read was a comment.  seek backwards
         # so that we see it the next time we read from input
-        input.seek(-len(line), 1)
+        input.unreadline(line)
     #print "seconds=%s, id=%s, body=%s" % (seconds, id, body)
     return Event(float(seconds), id, source, state, body)
     
@@ -275,16 +292,11 @@ class EventReader(object):
             else:
                 yield s
 
-def input_spec_to_file(spec):
-    if spec == '-':
-        return sys.stdin
-    return file(spec)
-
 #@traced_func
 def input_events(specs):
     if len(specs) == 0:
-        return iter(EventReader(sys.stdin))
-    evs = map(EventReader, map(input_spec_to_file, specs))
+        specs = ['-']
+    evs = [EventReader(EventFile(spec)) for spec in specs]
     return mergetools.imerge(*evs)
 
 
@@ -345,6 +357,16 @@ class CoalesceSequences(object):
         sys.stderr.write("front of the queue = %s" % self.bytime[0].id)
         sys.stderr.write("%s: %d events... (%d connections, %d waiting)\n"
             % (str(self.lasttime - self.starttime), n, len(self.connections), len(self.bytime)))
+            
+        # The stuff below summarizes the queue in this format:
+        # : <item> : <item> : <item>
+        # Where <item> is one of:
+        #   connection id(time since last message seen)
+        #   -- n -- where n is a number of ended connections just waiting to be printed
+        #
+        # Up to the first 5 connections found will be printed, along with the gaps of ended connections
+        # between them.
+        
         n = 0
         i = 0
         l = len(self.bytime)
@@ -376,6 +398,15 @@ class CoalesceSequences(object):
         return True
         
     def flush_completed(self):
+        """Print query sequences that have completed.
+        
+        Query sequences are always printed in order of the time the
+        sequence started.  Sequence endings are sometimes not present
+        in the event stream, in which case we must wait until the
+        sequence times out before printing it out.  No sequences after
+        the "stuck" sequence will be printed until it times out.
+        """
+        
         bytime = self.bytime
         
         while bytime:
@@ -385,12 +416,36 @@ class CoalesceSequences(object):
                     return
             heapq.heappop(bytime)
             self.fullSequence(c)
-
+            
+    def flush_all(self):
+        """Flush all sequences.
+        
+        Sequences are flushed even if no end event has been seen and 
+        they have not timed out yet.
+        """
+        
+        while self.bytime:
+            c = heapq.heappop(self.bytime)
+            c.endIfNeeded()
+            self.fullSequence(c)
 
     def replay(self, events):
-        n = 0;
+        """Correlate an interleaved query stream into sequences of queries."""
+        
+        # n = number of events seen
+        n = 0
+        
+        # s = number of sequences seen
+        s = 0
+        
+        # self.connections tracks open connections for which we have not seen an end event.
         connections = self.connections
+        
+        # bytime contains all queries that have not yet been printed as 
+        # sequences.  It is a min-heap ordered by time, so that the 
+        # earliest event is always first in the list.
         bytime = self.bytime
+        
         for e in events:
             id = e.id
             self.lasttime = e.time
@@ -399,19 +454,31 @@ class CoalesceSequences(object):
 
             n += 1
             if n % 10000 == 0:
+                # Print stats every 10000 events.
                 self.heartbeat(n)
             
+            # If this connection is already in the lsit of open connections, 
+            # see if it's stale or too old.  Sometimes the query stream doesn't
+            # contain the End event for a given connection, so we need to time
+            # it out.
             if id in connections:
                 c = connections[id]
                 self.age_out(c)
 
+            # At this point, the connection may have been aged out and removed from
+            # self.connections.  Otherwise, this could be the first message seen
+            # for this connection.  In either case, make a new connection.
             if id not in connections:
+                s += 1
                 c = connections[id] = CoalescedEvent(300.0, 900.0)
                 c.add(e)
                 heapq.heappush(bytime, c)
             else:
                 c.add(e)
 
+            # Check if the connection is closing.  If so, remove it from 
+            # self.connections, but don't print it out yet.  Events must
+            # be printed in order.
             if e.state == Event.End:
                 del connections[id]
 
@@ -419,8 +486,10 @@ class CoalesceSequences(object):
 
         for d in connections.itervalues():
             d.endIfNeeded()
-        self.flush_completed()
+        self.flush_all()
+        
+        print >> sys.stderr, "%d events processed; %d sequences produced" % (n, s)
                     
     def fullSequence(self, e):
-        pass
+        raise NotImplemented("fullSequence() should be implemented by a child class")
 
