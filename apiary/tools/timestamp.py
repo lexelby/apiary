@@ -31,12 +31,7 @@ class TimeStamp(object):
         self.seconds = s
         self.micros = int(us)
     
-        t = type(s)
-        if t is float:
-            (frac_part, int_part) = math.modf(s)
-            self.seconds = int(int_part)
-            self.micros = int(round(frac_part * 1.0e6))
-        elif t is str:
+        if type(s) is str:
             parts = s.split('.') # pylint: disable-msg=E1101
             n = len(parts)
             self.seconds = 0
@@ -45,6 +40,8 @@ class TimeStamp(object):
             if n >= 2:
                 us = int((parts[1] + "0000000")[0:7]) / 10.0
                 self.micros = int(round(us))
+        
+        self._normalize()
 
     def __str__(self):
         return "%d.%06d" % (self.seconds, self.micros)
@@ -77,5 +74,26 @@ class TimeStamp(object):
             s -= 1
         return TimeStamp(s, us)
 
+    def __mul__(self, number):
+        seconds = self.seconds * float(number)
+        micros = self.micros * float(number)
+        
+        return TimeStamp(seconds, micros)
+        
     def __float__(self):
         return self.seconds + self.micros / 1.0e6
+    
+    def _normalize(self):
+        if type(self.seconds) is float:
+            (frac_part, int_part) = math.modf(self.seconds)
+            self.seconds = int(int_part)
+            self.micros += int(round(frac_part * 1.0e6))        
+        
+        while self.micros > 1000000:
+            self.micros -= 1000000
+            self.seconds += 1
+        
+        while self.micros < -1000000:
+            self.micros += 1000000
+            self.seconds -= 1
+        

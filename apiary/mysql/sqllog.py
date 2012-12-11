@@ -203,7 +203,12 @@ def parse_stanza(input):
             # convert timestamp into seconds since epoch:
             # strip off subseconds, convert remainder to seconds, 
             # append subseconds
-            date_time, subseconds = timestamp.split('.')
+            parts = timestamp.split('.')
+            if len(parts) == 2:
+                date_time, subseconds = timestamp.split('.')
+            else:
+                date_time = timestamp
+                subseconds = 0
             seconds = str(int(time.mktime(time.strptime(date_time, "%y%m%d %H:%M:%S")))) + ".%s" % subseconds
         if clientRE.match(line):
             id = clientRE.match(line).groups()[0]

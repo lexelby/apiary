@@ -205,7 +205,7 @@ class BeeKeeper(object):
             self._all_done.clear()
             return                    
                     
-        if not self._throttle or waiting < (100 * (running + 1)):
+        if not self._throttle or waiting < (10 * (running + 1)):
             self._ok_to_start.set()
         else:
             self._ok_to_start.clear()
@@ -457,8 +457,13 @@ class QueenBee(object):
         beekeeper_thread.setDaemon(True)
         beekeeper_thread.start()
         
-        while self.next():
-            self.flush_results()
+        
+        try:
+            while self.next():
+                self.flush_results()
+        except KeyboardInterrupt:
+            print "Interrupted, shutting down..."
+            
         # *FIX: This is probably related to the bug in http where the same span gets repeatedly re-inserted.
         for job in self._jobs.keys():
             self.end(job)

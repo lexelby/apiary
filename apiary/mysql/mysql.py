@@ -43,9 +43,10 @@ def wait_until(ts):
     tn = now()
     if ts > tn:
         delta = float(ts - tn)
-        if delta > 65.0:
-            raise Exception("trying to wait longer than 65s. now = %s, until = %s"
-                % (str(tn), str(ts)))
+        # why was this ever here? --Lex
+        #if delta > 65.0:
+        #    raise Exception("trying to wait longer than 65s. now = %s, until = %s"
+        #        % (str(tn), str(ts)))
         time.sleep(delta)
 
 mysql_host = 'localhost'
@@ -147,7 +148,9 @@ class MySQLQueenBee(apiary.QueenBee):
         # arguments, which come here from the command line
         self._connections = {}
         self._tally = {}
-        self._time_offset = None
+        self._time_scale = 1.0 / options.speedup
+        self._event_start = None
+        self._replay_start = None
         self._tally_time = time.time() + 15.0
         
     def tally(self, msg):
@@ -182,9 +185,9 @@ class MySQLQueenBee(apiary.QueenBee):
         except StopIteration:
             return False
         
-        if self._time_offset is None:
-            self._time_offset = now(1.0) - e.time
-        t = self._time_offset + e.time
+        if self._event_start is None:
+            self._event_start = e.time
+        t = (e.time - self._event_start) * self._time_scale + self._replay_start
         
         id = e.id
         if e.state == sqllog.Event.End:
@@ -212,6 +215,7 @@ class MySQLQueenBee(apiary.QueenBee):
     def main(self):
         t = - time.time()
         c = - time.clock()
+        self._replay_start = now(1.0)
         apiary.QueenBee.main(self)
         c += time.clock()
         t += time.time()
@@ -228,6 +232,10 @@ workerbee_cls = MySQLWorkerBee
 def add_options(parser):
     parser.add_option('--no-mysql', default=False, dest='no_mysql', action='store_true',
                         help="Don't make mysql connections.  Return '200 OK' instead.")
+    parser.add_option('--speedup', default=1.0, dest='speedup', type='float',
+                        help="Time multiple used when replaying query logs.  2.0 means "
+                             "that queries run twice as fast (and the entire run takes "
+                             "half the time the capture ran for).")
     parser.add_option('--mysql-host',
                         default=mysql_host, metavar='HOST',
                         help='MySQL server to connect to (default: %default)')
