@@ -205,7 +205,7 @@ class BeeKeeper(object):
             self._all_done.clear()
             return                    
                     
-        if not self._throttle or waiting < (10 * (running + 1)):
+        if not self._throttle or waiting < max(100000, (100 * (running + 1))):
             self._ok_to_start.set()
         else:
             self._ok_to_start.clear()
@@ -653,9 +653,11 @@ def add_workerbee_options(parser):
     parser.add_option('--asap',
                       action='store_true', default=False,
                       help='send queries as fast as possible (default: off)')
-    parser.add_option('-f', '--fork', metavar='K',
+    parser.add_option('-w', '-f', '--workers', metavar='N',
                       default=0, type='int',
-                      help='fork K detached processes (default: 0)')
+                      help='fork N workerbee processes (default: 0)')
+    parser.add_option('-b', '--background', default=False,
+                      action='store_true', help="Detach after forking workers.")
     parser.add_option('--clean',
                       action='store_true', default=False,
                       help='clean up all queues, causing old workers to quit')

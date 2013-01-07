@@ -32,8 +32,9 @@ related to configuration, option parsing, and process/thread management.
 import optparse
 import sys
 import os
-import threading
-import thread
+import multiprocessing
+import signal
+import time
 
 import apiary
 import apiary.tools.debug
@@ -47,6 +48,12 @@ protocols = {
     'http': apiary.http,
     }
 
+class SignalReceived(Exception):
+    pass
+
+def handle_signal(signum, frame):
+    raise SignalReceived()
+
 
 def main(args=sys.argv[1:]):
     options, arguments = parse_args(args)
@@ -58,25 +65,33 @@ def main(args=sys.argv[1:]):
     if options.clean:
         apiary.clean(options)
             
-    if (not options.clean and not options.queenbee and options.fork == 0):
+    if (not options.clean and not options.queenbee and options.workers == 0):
         sys.exit('Nothing to do: specify one or more of --queenbee, --fork or --clean')
+
+    if options.workers and options.queenbee:
+        sys.exit('Cannot specify both --queenbee and --workers')
     
     if options.profile:
         from apiary.tools import lsprof
         profiler = lsprof.Profiler()
         profiler.enable(subcalls=True)
 
-    if options.fork > 0:
-        if not options.queenbee:
-            options.fork -= 1 # Hack: this process will be one of the workers.
-        start_forks(options, arguments)
-        # *HACK: start_forks sets this option False inside children,
-        # so this means "if we are a child process or --queenbee was
-        # not passed":
-        if not options.queenbee:
-            run_worker(protomod.workerbee_cls, options, arguments)
-
-    if options.queenbee:
+        
+    if options.workers:
+        
+        workers = []
+        
+        for i in xrange(options.workers):
+            process = multiprocessing.Process(target=run_worker, args=[protomod.workerbee_cls, options, arguments])
+            
+            if not options.background:
+                process.daemon = True
+            process.start()
+            workers.append(process)
+        
+        if not options.background:
+            run_monitor(workers)
+    elif options.queenbee:
         run_queenbee(protomod.queenbee_cls, options, arguments)
         
     if options.profile:
@@ -85,23 +100,10 @@ def main(args=sys.argv[1:]):
         stats.sort()
         stats.pprint(top=10, file=sys.stderr, climit=5)
 
-    
-def start_forks(options, arguments):
-    debug('Starting %d worker processes.', options.fork)
-    
-    if os.fork() == 0:
-        # now in child
-        os.setsid() # magic that creates a new process group
-        options.queenbee = False # ensure forks don't run queenbee
-        for i in xrange(0, options.fork):
-            if os.fork() == 0:
-                # now in grandchild
-                return # escape loop, keep processing
-        sys.exit(0)
-    else:
-        options.workers = 0 # ensure parent doesn't run workers
-
 def run_worker(worker_cls, options, arguments):
+    # Ignore ^C in the children.  The parent process will catch it and kill us.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    
     w = worker_cls(options, arguments)
     w.main()
         
@@ -111,7 +113,30 @@ def run_queenbee(queenbee_cls, options, arguments):
     c = queenbee_cls(options, arguments)
     c.main()
 
-
+def run_monitor(workers):
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGHUP, handle_signal)
+    
+    try:
+        while True:
+            time.sleep(10)
+    except (KeyboardInterrupt, SignalReceived):
+        print "Terminating worker bees..."
+        for worker in workers:
+            worker.terminate()
+        
+        time.sleep(5)
+        
+        print "Cleaning up remaining worker bees..."
+        for worker in workers:
+            try:
+                os.kill(worker.pid, signal.SIGKILL)
+            except:
+                pass
+        
+        print "done."
+    
+    
 def parse_args(args = []):
     parser = build_option_parser()
     options, args = parser.parse_args(args)
