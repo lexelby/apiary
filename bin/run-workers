@@ -1,0 +1,53 @@
+#!/usr/bin/python
+
+import multiprocessing
+import sys
+import os.path
+import time
+import signal
+
+import sys, tty, termios
+
+def run_worker(host, apiary_path, apiary_args):
+    # Ignore ^C in the children.  The parent process will catch it and kill us.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    
+    os.close(0) # Don't steal stdin
+    os.execv('/usr/bin/ssh', ['/usr/bin/ssh', '-tt', host, '--', apiary_path] + apiary_args)
+
+if __name__ == '__main__':
+    args = sys.argv[1:]
+
+    if '--' not in sys.argv:
+        print "usage: %s <host1> ... -- <apiary arguments>"
+        sys.exit(1)
+    else:
+        separator_pos = args.index('--')
+        hosts = args[0:separator_pos]
+        apiary_args = args[separator_pos + 1:]
+
+    my_path = os.path.abspath(sys.argv[0])
+    apiary_path = os.path.join(os.path.dirname(my_path), "apiary")
+
+    processes = []
+
+    print "Spawning apiary worker bees on hosts:", " ".join(hosts)
+    
+    for host in hosts:
+        process = multiprocessing.Process(target=run_worker, args=[host, apiary_path, apiary_args])
+        process.daemon = True
+        process.start()
+        processes.append(process)
+
+    
+    print "Press Ctrl-C to quit and kill workers on all hosts..."
+    try:
+        while True:
+            # TODO: check for all processes exiting
+            time.sleep(1)
+    except (SystemExit, KeyboardInterrupt):
+        print 
+    
+    print "Terminating remaining workers..."
+    for process in processes:
+        process.terminate()
