@@ -143,7 +143,10 @@ class MySQLWorkerBee(apiary.WorkerBee):
 class MySQLQueenBee(apiary.QueenBee):
     def __init__(self, options, arguments):
         apiary.QueenBee.__init__(self, options, arguments)
-        self._events = sqllog.input_events(arguments)
+        if options.pickled:
+            self._events = sqllog.input_pickled_events(arguments)
+        else:
+            self._events = sqllog.input_events(arguments)
         # this builds a sequence of events from the log streams in the
         # arguments, which come here from the command line
         self._connections = {}
@@ -152,6 +155,7 @@ class MySQLQueenBee(apiary.QueenBee):
         self._event_start = None
         self._replay_start = None
         self._tally_time = time.time() + 15.0
+        self._delay_start = timestamp.TimeStamp(options.prefill)
         
     def tally(self, msg):
         # aggregate these error codes since we see a lot of them (1062/1064)
@@ -187,7 +191,7 @@ class MySQLQueenBee(apiary.QueenBee):
         
         if self._event_start is None:
             self._event_start = e.time
-        t = (e.time - self._event_start) * self._time_scale + self._replay_start
+        t = (e.time - self._event_start) * self._time_scale + self._replay_start + self._delay_start
         
         id = e.id
         if e.state == sqllog.Event.End:
@@ -236,6 +240,13 @@ def add_options(parser):
                         help="Time multiple used when replaying query logs.  2.0 means "
                              "that queries run twice as fast (and the entire run takes "
                              "half the time the capture ran for).")
+    parser.add_option('--pickled',
+                      default=False, action='store_true',
+                      help='sequence file contains pickled events')
+    parser.add_option('--prefill',
+                      default=0, type="int", metavar="SECONDS",
+                      help="""Prefill the queue with jobs for SECONDS.  Use 
+                          this if the queenbee can't generate jobs fast enough.""")
     parser.add_option('--mysql-host',
                         default=mysql_host, metavar='HOST',
                         help='MySQL server to connect to (default: %default)')

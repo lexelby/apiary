@@ -41,11 +41,13 @@ import socket
 import sys
 import tempfile
 import threading
+from Queue import Queue, Empty
 import time
 
 import amqplib.client_0_8 as amqp
 
 from apiary.tools import stattools
+from apiary.tools.counter import Counter
 from apiary.tools.debug import debug, traced_func, traced_method
 
 # We use an amqp virtual host called "/apiary".
@@ -163,12 +165,6 @@ class Transport(object):
         while self._ch.callbacks:
             self._ch.wait()
 
-
-_STATE_WAITING_PARTIAL  = 0
-_STATE_WAITING_COMPLETE = 1
-_STATE_RUNNING_PARTIAL  = 2
-_STATE_RUNNING_COMPLETE = 3
-    
 class BeeKeeper(object):
     """Maintains job status"""
     
@@ -177,107 +173,56 @@ class BeeKeeper(object):
         self._verbose = options.verbose
         self._throttle = options.throttle
         self._lock = threading.Lock()
+        self.results = Queue()
         self._ok_to_start = threading.Event()
         self._ok_to_start.set()
-        self._all_done = threading.Event()
-        self._all_done.set()
-        self._jobs = { }
-        self._counts = [ 0, 0, 0, 0 ]
-        self._results = [ ]
-        self._running_stats = stattools.StatValue()
-        self._waiting_stats = stattools.StatValue()
         self._workercount = 0
         self._shutdownphase = False
+        self.outstanding_jobs = Counter()
+        self.working_jobs = Counter()
     
     def _recompute(self):
-        # print 'counts:', ','.join(map(str, self._counts))
-        running = (self._counts[_STATE_RUNNING_PARTIAL]
-                    + self._counts[_STATE_RUNNING_COMPLETE])
-        waiting = (self._counts[_STATE_WAITING_PARTIAL]
-                    + self._counts[_STATE_WAITING_COMPLETE])
+        """Update self._ok_to_start to reflect current conditions.
         
-        self._running_stats.sample(running)
-        self._waiting_stats.sample(waiting)
-
-        if self._counts[_STATE_RUNNING_PARTIAL] > 0:
-            # if there are started jobs that aren't complete, keep going
-            self._ok_to_start.set()
-            self._all_done.clear()
-            return                    
-                    
-        if not self._throttle or waiting < max(100000, (100 * (running + 1))):
+        Call this after incrementing or decrementing self.outstanding_jobs or
+        self.working_jobs.
+        """
+        
+        if not self._throttle or self.outstanding_jobs.value() < max(100000, 100 * working_jobs.value()):
             self._ok_to_start.set()
         else:
             self._ok_to_start.clear()
-            
-        if running == 0 and waiting == 0:
-            self._all_done.set()
-        else:
-            self._all_done.clear()
     
     def queenbee_start(self, job):
+        """Called by QueenBee before starting to prepare a new job."""
         if self._verbose >= 2:
             print "queenbee_start", job
         self._ok_to_start.wait()
-        self._lock.acquire()
-        self._jobs[job] = _STATE_WAITING_PARTIAL
-        self._counts[_STATE_WAITING_PARTIAL] += 1
-        self._recompute()
-        self._lock.release()
         return True
     
     def queenbee_end(self, job):
+        """Called by QueenBee after sending a new job."""
         if self._verbose >= 2:
             print "queenbee_end", job
-        self._lock.acquire()
-
-        # *FIX: There's a race condition: if self.worker_end was called
-        # on this job before then it won't exist in _jobs.
-        if job in self._jobs:
-            s = self._jobs[job]
-            self._counts[s] -= 1
-            if s == _STATE_WAITING_PARTIAL:
-                s = _STATE_WAITING_COMPLETE
-            if s == _STATE_RUNNING_PARTIAL:
-                s = _STATE_RUNNING_COMPLETE
-            self._jobs[job] = s
-            self._counts[s] += 1
+            
+        self.outstanding_jobs.increment()
         self._recompute()
-        self._lock.release()
     
     def worker_start(self, job):
         if self._verbose >= 2:
             print "worker_start", job
-        self._lock.acquire()
-        if job in self._jobs:
-            s = self._jobs[job]
-            self._counts[s] -= 1
-            if s == _STATE_WAITING_PARTIAL:
-                s = _STATE_RUNNING_PARTIAL
-            if s == _STATE_WAITING_COMPLETE:
-                s = _STATE_RUNNING_COMPLETE
-            self._jobs[job] = s
-            self._counts[s] += 1
-            self._recompute()
-        else:
-            print "Received worker start of unknown job:", job
-        self._lock.release()
+        self.working_jobs.increment()
+        self._recompute()
     
     def worker_end(self, msg):
         result = msg.split(',', 1)
         job = result[0]
         if self._verbose >= 2:
             print "worker_end", job
-        self._lock.acquire()
-        if job in self._jobs:
-            s = self._jobs[job]
-            self._counts[s] -= 1
-            del self._jobs[job]
-            self._recompute()
-            self._results.append(result)
-        else:
-            print "Received worker end of unknown job:", job
-        self._lock.release()
+        self.results.put(result)
+        self.working_jobs.decrement()
+        self.outstanding_jobs.decrement()
+        self._recompute()
     
     @traced_method
     def worker_status(self, msg):
@@ -309,14 +254,7 @@ class BeeKeeper(object):
                 print "Received unknown status:", body
             
     def not_done(self):
-        return not self._all_done.isSet()
-    
-    def results(self):
-        self._lock.acquire()
-        rs = self._results
-        self._results = []
-        self._lock.release()
-        return rs
+        return self.outstanding_jobs.value() > 0 or self.working_jobs.value() > 0
 
     def run(self):
         t = Transport(self._options)
@@ -329,7 +267,6 @@ class BeeKeeper(object):
         except amqp.AMQPChannelException, e:
             print "Error received when trying to consume from queue 'beekeeper-end': %s" % e[1]
             t.close()
-            self._all_done.set()
             return
         if self._verbose > 2:
             print "consuming worker-status"
@@ -435,9 +372,13 @@ class QueenBee(object):
         self._beekeeper.queenbee_end(job)
         
     def flush_results(self):
-        for r in self._beekeeper.results():
-            self._lastresult = time.time()
-            self.result(r[0], r[1])
+        try:
+            while True:
+                r = self._beekeeper.results.get(block=False)
+                
+                self.result(r[0], r[1])
+        except Empty:
+            pass
             
     def log(self, msg):
         t = time.time()
@@ -646,6 +587,7 @@ def add_queenbee_options(parser):
     parser.add_option('--throttle',
                       default=False, action='store_true',
                       help='attempt to throttle jobs in queue')
+    
     return parser
     
 

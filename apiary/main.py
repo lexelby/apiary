@@ -111,7 +111,10 @@ def run_queenbee(queenbee_cls, options, arguments):
     debug('Launching %r; options %r; arguments %r', queenbee_cls, options, arguments)
     
     c = queenbee_cls(options, arguments)
-    c.main()
+    try:
+        c.main()
+    except KeyboardInterrupt:
+        pass
 
 def run_monitor(workers):
     signal.signal(signal.SIGTERM, handle_signal)

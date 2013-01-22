@@ -27,6 +27,7 @@ import heapq
 import re
 import sys
 import time
+import cPickle
 
 from apiary.tools.debug import *
 from apiary.tools import mergetools
@@ -282,6 +283,17 @@ class Sequence(object):
         return Event(t, e.id, e.source, Event.End, "")
 
 
+class RawEventReader(object):
+    def __init__(self, input):
+        self._input = input
+    
+    def __iter__(self):
+        while True:
+            s = parse_stanza(self._input)
+            if s is None:
+                return
+            yield s
+
 class EventReader(object):
     def __init__(self, input):
         self._input = input
@@ -296,7 +308,7 @@ class EventReader(object):
                     yield t
             else:
                 yield s
-
+                
 #@traced_func
 def input_events(specs):
     if len(specs) == 0:
@@ -304,7 +316,63 @@ def input_events(specs):
     evs = [EventReader(EventFile(spec)) for spec in specs]
     return mergetools.imerge(*evs)
 
+def split_events(specs, dest_prefix, num_splits):
+    if len(specs) == 0:
+        specs = ['-']
 
+    dests = [open(dest_prefix + str(n), 'w') for n in xrange(num_splits)]
+    
+    evs = [EventReader(EventFile(spec)) for spec in specs]
+    merged = mergetools.imerge(*evs)
+    
+    start_time = time.time()
+    
+    for num, event in enumerate(merged):
+        if num % 10000 == 0:
+            elapsed = time.time() - start_time
+            print "split %d events in %s seconds (%.2f events/sec)..." % (num, elapsed, float(num) / float(elapsed))
+        
+        dests[num % num_splits].write(str(event))
+
+def pickle_events(specs, dest):
+    if len(specs) == 0:
+        specs = ['-']
+    
+    if not isinstance(dest, file):
+        dest = open(dest, 'w')
+    
+    evs = [EventReader(EventFile(spec)) for spec in specs]
+    merged = mergetools.imerge(*evs)
+    
+    start_time = time.time()
+    
+    for num, event in enumerate(merged):
+        if num % 10000 == 0:
+            elapsed = time.time() - start_time
+            print "pickled %d events in %s seconds (%.2f events/sec)..." % (num, elapsed, float(num) / float(elapsed))
+        
+        if event.state == CoalescedEvent.Sequence:
+            for subevent in event.events():
+                cPickle.dump(subevent, file=dest)
+        else:
+            cPickle.dump(event, file=dest)
+
+
+def input_pickled_events(specs):
+    for spec in specs:
+        sequence_file = open(spec)
+        
+        while True:
+            try:
+                event = cPickle.load(sequence_file)
+                if event.state == CoalescedEvent.Sequence:
+                    for subevent in event.events():
+                        yield subevent
+                else:
+                    yield event
+            except EOFError:
+                break
+        
 class FollowSequences(object):
     def replay(self, events):
         connections = { }
