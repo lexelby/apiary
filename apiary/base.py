@@ -49,6 +49,7 @@ import amqplib.client_0_8 as amqp
 
 from apiary.tools import stattools
 from apiary.tools.counter import Counter
+from apiary.tools.transport import Transport, ConnectionError
 from apiary.tools.debug import debug, traced_func, traced_method
 
 # We use an amqp virtual host called "/apiary".
@@ -66,105 +67,6 @@ amqp_password = 'beehonest'
 amqp_vhost = '/apiary'
 amqp_exchange = 'b.direct'
 verbose = False
-
-class TimeoutError(Exception):
-    pass
-
-class ConnectionError(Exception):
-    pass
-
-
-class Transport(object):
-    """A simple message queue-like transport system
-    
-    Built on AMQP, hides much of the details of that interface and presents
-    a simple set of utilities for sending and receiving messages on named
-    queues.
-    
-    """
-        
-    def __init__(self, options=None):
-        self._amqp_host = getattr(options, 'amqp_host', amqp_host)
-        self._amqp_vhost = getattr(options, 'amqp_vhost', amqp_vhost)
-        self._amqp_userid = getattr(options, 'amqp_userid', amqp_userid)
-        self._amqp_password = getattr(options, 'amqp_password', amqp_password)
-        self._verbose = getattr(options, 'verbose', verbose)
-    
-    def _server_connect(self):
-        try:
-            if self._verbose >= 2:
-                print "connecting to amqp '%s@%s%s'" % (self._amqp_userid, self._amqp_host, self._amqp_vhost)
-            self._conn = amqp.Connection(
-                    self._amqp_host, virtual_host=self._amqp_vhost,
-                    userid=self._amqp_userid, password=self._amqp_password)
-        except socket.error, e:
-            raise ConnectionError("Error connecting to '%s': %s" % (self._amqp_host, e))
-
-        self._ch = self._conn.channel()
-        self._ch.access_request('/data', active=True, write=True, read=True)
-        self._ch.exchange_declare(amqp_exchange, 'direct', durable=False, auto_delete=False)
-    
-    def _server_close(self):
-        try:
-            self._ch.close()
-            self._ch = None
-        except:
-            pass
-        try:
-            self._conn.close()
-            self._conn = None
-        except:
-            pass
-       
-    def connect(self):
-        self._server_connect()
-        self._queues = []
-        
-    def close(self):
-        for qname in self._queues:
-            self._ch.queue_delete(qname)
-        self._queues = []
-        self._server_close()
-    
-    def queue(self, queue='', inControl=True, clean=False):
-        queue, _, _ = self._ch.queue_declare(queue, durable=False, auto_delete=False)
-        try:
-            self._ch.queue_bind(queue, amqp_exchange, queue)
-        except amqp.AMQPChannelException, e:
-            sys.exit("Error binding to queue: %s" % e[1])
-        if inControl:
-            self._queues.append(queue)
-        if clean:
-        # we purge the queues when we first initialize them
-            if self._verbose >= 2:
-                print "purging queue " + queue
-            self._ch.queue_purge(queue)
-        return queue
-
-    # same as queue(), only without inControl, so it consumes instead of appending 
-    def usequeue(self, queue, clean=False):
-        self.queue(queue, inControl=False, clean=clean)
-
-    @traced_method
-    def send(self, queue, data):
-        msg = amqp.Message(data)
-        self._ch.basic_publish(msg, amqp_exchange, queue)
-    
-    def consume(self, queue, tag, fn):
-        fn = traced_func(fn)
-        return self._ch.basic_consume(
-            queue,
-            tag,
-            no_ack=True,
-            exclusive=True,
-            callback=fn)
-
-    def cancelconsume(self, tag):
-        self._ch.basic_cancel(tag)
-    
-    def wait(self):
-        while self._ch.callbacks:
-            self._ch.wait()
 
 class BeeKeeper(object):
     """Maintains job status"""
