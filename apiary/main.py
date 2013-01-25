@@ -41,11 +41,13 @@ import apiary.tools.debug
 from apiary.tools.debug import *
 import apiary.mysql
 import apiary.http
+import apiary.preprocessed
 
 
 protocols = {
     'mysql': apiary.mysql,
     'http': apiary.http,
+    'preprocessed': apiary.preprocessed
     }
 
 class SignalReceived(Exception):

@@ -41,6 +41,7 @@ import socket
 import sys
 import tempfile
 import threading
+import cPickle
 from Queue import Queue, Empty
 import time
 
@@ -188,7 +189,7 @@ class BeeKeeper(object):
         self.working_jobs.
         """
         
-        if not self._throttle or self.outstanding_jobs.value() < max(100000, 100 * working_jobs.value()):
+        if not self._throttle or self.outstanding_jobs.value() < max(100000, 100 * self.working_jobs.value()):
             self._ok_to_start.set()
         else:
             self._ok_to_start.clear()
@@ -279,8 +280,6 @@ class BeeKeeper(object):
     def stop(self, msg):
         msg.channel.basic_cancel('m0')
         msg.channel.basic_cancel('m1')
-        print "running concurrency:", self._running_stats.format()
-        print "waiting concurrency:", self._waiting_stats.format()
 
     def shutdown_phase(self, msg):
         debug('received shutdown message: %s', msg.body)
@@ -330,6 +329,21 @@ class QueenBee(object):
         self._jobs = {}        
         self._logtime = time.time()
         self._lastresult = time.time()
+        
+        if options.preprocess:
+            self._preprocessed_file = open(options.preprocess, "wb")
+            self._num_preprocessed = 0
+            self._preprocess_start_time = time.time()
+            self._send = self._save_message
+    
+    def _save_message(self, queue, msg):
+        self._num_preprocessed += 1
+        
+        if self._options.verbose and self._num_preprocessed % 10000 == 0:
+            elapsed = time.time() - self._preprocess_start_time
+            print "preprocessed %d jobs in %s seconds (%.2f events/sec)..." % (self._num_preprocessed, elapsed, float(self._num_preprocessed) / float(elapsed))
+        
+        cPickle.dump(msg, file=self._preprocessed_file)
     
     # Methods to override in subclasses
 
@@ -386,18 +400,34 @@ class QueenBee(object):
         print ("(%8.4f) %s -> %s" % (t - self._logtime, t, self._logtime)), msg
         self._logtime = t
     
+    def _preprocess(self):
+        # Make sure that beekeeper doesn't slow us down.
+        self._options.throttle = False
+        
+        try:
+            # initialization of self._send in __init__ will take care of 
+            # capturing messages
+            start_time = time.time()
+
+            while self.next():
+                pass
+        finally:
+            self._preprocessed_file.close()
+    
     def main(self):
+        print "Initializing BeeKeeper"
+
         self._transport.connect()
         self._transport.queue('beekeeper-end', clean=True)
         self._transport.queue('worker-job', clean=True)
-        
 
-        print "Initializing BeeKeeper"
         self._beekeeper = BeeKeeper(self._options)
         beekeeper_thread = threading.Thread(target=self._beekeeper.run)
         beekeeper_thread.setDaemon(True)
         beekeeper_thread.start()
         
+        if self._options.preprocess:
+            return self._preprocess()
         
         try:
             while self.next():
@@ -584,6 +614,12 @@ def add_queenbee_options(parser):
     parser.add_option('-c', '--queenbee',
                       default=False, action='store_true',
                       help='run a queenbee (queenbee job distributor)')
+    parser.add_option('--preprocess', metavar="FILE",
+                      help="""Don't actually send jobs to workers, instead 
+                      preprocess them into a form that may be used by the 
+                      "preprocessed" protocol, and save them in FILE.  
+                      Preprocessed jobs can be sent to rabbitmq much more 
+                      quickly.""")
     parser.add_option('--throttle',
                       default=False, action='store_true',
                       help='attempt to throttle jobs in queue')
