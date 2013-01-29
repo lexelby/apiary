@@ -36,19 +36,22 @@ protocol, nor to configuration, nor process management.
 
 import optparse
 import os
+import re
 import random
 import socket
 import sys
 import tempfile
-import threading
 import cPickle
-from Queue import Queue, Empty
+import MySQLdb
 import time
+import warnings
+from multiprocessing import Value
 
 import amqplib.client_0_8 as amqp
 
 from apiary.tools import stattools
 from apiary.tools.counter import Counter
+from apiary.tools.childprocess import ChildProcess
 from apiary.tools.transport import Transport, ConnectionError
 from apiary.tools.debug import debug, traced_func, traced_method
 
@@ -61,398 +64,302 @@ from apiary.tools.debug import debug, traced_func, traced_method
 
 # credit: http://blogs.digitar.com/jjww/
 
-amqp_host = 'localhost'
-amqp_userid = 'apiary'
-amqp_password = 'beehonest'
-amqp_vhost = '/apiary'
-amqp_exchange = 'b.direct'
 verbose = False
 
 class BeeKeeper(object):
-    """Maintains job status"""
+    """Manages the hive, including QueenBee, WorkerBees, and StatsGatherer."""
     
+    def __init__(self, options, arguments):
+        self.options = options
+        self.arguments = arguments
+    
+    def start(self):
+        """Run the load test."""
+        
+        start_time = time.time()
+        
+        workers = []
+        
+        for i in xrange(self.options.workers):
+            worker = WorkerBee(self.options)
+            worker.start()
+            workers.append(worker)
+        
+        # TODO: consider waiting until workers are ready
+        
+        stats_gatherer = StatsGatherer(self.options)
+        stats_gatherer.start()
+        
+        queen = QueenBee(self.options, self.arguments)
+        queen.start()
+        
+        # Now wait while the queen does its thing.
+        try:
+            queen.join()
+        except KeyboardInterrupt:
+            print "Interrupted, shutting down..."
+            queen.terminate()
+        
+        print "Waiting for workers to complete jobs and terminate (may take up to %d seconds)..." % self.options.max_ahead
+        
+        try:
+            # All jobs have been sent to rabbitMQ.  Now tell workers to stop.
+            transport = Transport(self.options)
+            transport.connect()
+            transport.queue('worker-job', clean=False)
+            
+            for worker in workers:
+                transport.send('worker-job', cPickle.dumps(Message(Message.STOP_WORKER)))
+            
+            # Now wait for the workers to get the message.  This may take a few 
+            # minutes as the QueenBee likes to stay ahead by a bit.
+            
+            for worker in workers:
+                worker.join()
+            
+            # Tell the Stats Gatherer that it's done.
+            transport.queue('worker-status', clean=False)
+            transport.send('worker-status', cPickle.dumps(Message(Message.STOP_STATS_GATHERER)))
+            
+            # Wait for it to finish.
+            stats_gatherer.join()
+            
+            print "Completed %d jobs in %0.2f seconds." % (queen.jobs_sent.value, time.time() - start_time)
+        except KeyboardInterrupt:
+            print "Interrupted before shutdown process completed."
+    
+class StatsGatherer(ChildProcess):
+
     def __init__(self, options):
+        super(StatsGatherer, self).__init__()
+        
         self._options = options
         self._verbose = options.verbose
-        self._throttle = options.throttle
-        self._lock = threading.Lock()
-        self.results = Queue()
-        self._ok_to_start = threading.Event()
-        self._ok_to_start.set()
-        self._workercount = 0
-        self._shutdownphase = False
-        self.outstanding_jobs = Counter()
-        self.working_jobs = Counter()
+        self._tally = {}
+        self._tally_time = time.time() + 15.0
+        self._worker_count = 0
+        self._table_dne_re = re.compile('''500 \(1146, "Table '.*' doesn't exist"\)''')
     
-    def _recompute(self):
-        """Update self._ok_to_start to reflect current conditions.
-        
-        Call this after incrementing or decrementing self.outstanding_jobs or
-        self.working_jobs.
-        """
-        
-        if not self._throttle or self.outstanding_jobs.value() < max(100000, 100 * self.working_jobs.value()):
-            self._ok_to_start.set()
-        else:
-            self._ok_to_start.clear()
+    def tally(self, msg):
+        # aggregate these error codes since we see a lot of them (1062/1064)
+        if "Duplicate entry" in msg:
+            msg = '501 (1062, "Duplicate entry for key")'
+        elif "You have an error in your SQL syntax" in msg:
+            msg = '501 (1064, "You have an error in your SQL syntax")'
+        elif self._table_dne_re.match(msg):
+            msg = '''501 (1146, "Table ___ doesn't exist")'''
+        self._tally[msg] = self._tally.get(msg, 0) + 1
+        if time.time() > self._tally_time:
+            self.print_tally()
+
     
-    def queenbee_start(self, job):
-        """Called by QueenBee before starting to prepare a new job."""
-        if self._verbose >= 2:
-            print "queenbee_start", job
-        self._ok_to_start.wait()
-        return True
-    
-    def queenbee_end(self, job):
-        """Called by QueenBee after sending a new job."""
-        if self._verbose >= 2:
-            print "queenbee_end", job
-            
-        self.outstanding_jobs.increment()
-        self._recompute()
-    
-    def worker_start(self, job):
-        if self._verbose >= 2:
-            print "worker_start", job
-        self.working_jobs.increment()
-        self._recompute()
-    
-    def worker_end(self, msg):
-        result = msg.split(',', 1)
-        job = result[0]
-        if self._verbose >= 2:
-            print "worker_end", job
-        self.results.put(result)
-        self.working_jobs.decrement()
-        self.outstanding_jobs.decrement()
-        self._recompute()
+    def print_tally(self):
+        keys = self._tally.keys()
+        keys.sort()
+        print
+        print "       count - message"
+        print "------------   -------------------------------------------"
+        for k in keys:
+            print ("%12d - %s" % (self._tally[k], k))
+        self._tally_time = time.time() + 15.0    
     
     @traced_method
     def worker_status(self, msg):
         debug("received worker status: %s" % msg.body)
         body = msg.body
-        if body == Messages.WorkerNew:
-            self._workercount += 1
+        message = cPickle.loads(body)
+        if message.type == Message.WORKER_NEW:
+            self._worker_count += 1
             debug('new-worker: now %d workers.',
-                  self._workercount)
+                  self._worker_count)
             return
-        elif body == Messages.WorkerHalted:
-            self._workercount -= 1
+        elif message.type == Message.WORKER_HALTED:
+            self._worker_count -= 1
             debug('worker-stopped: now %d workers.',
-                  self._workercount)
-            assert self._workercount >= 0
-            if self._shutdownphase and self._workercount == 0:
-                self.stop(msg)
+                  self._worker_count)
             return
+        elif message.type == Message.STOP_STATS_GATHERER:
+            debug('Stopping stats gatherer.')
+            self.print_tally()
+            msg.channel.basic_cancel('worker-status')
+        elif message.type == Message.JOB_STARTED:
+            self.tally("100 Start Job")
+        elif message.type == Message.JOB_COMPLETED:
+            self.tally("200 OK")
+        elif message.type == Message.JOB_ERROR:
+            self.tally("500 %s" % message.body)
         else:
-            parts = body.split(',', 1)
-            if len(parts) != 2:
-                print "Received malformed status:", body
-                return
-            if parts[0] == 'start':
-                self.worker_start(parts[1])
-            elif parts[0] == 'end':
-                self.worker_end(parts[1])
-            else:
-                print "Received unknown status:", body
-            
-    def not_done(self):
-        return self.outstanding_jobs.value() > 0 or self.working_jobs.value() > 0
-
-    def run(self):
+            print >> sys.stderr, "Received unknown worker status: %s" % message
+    
+    def run_child_process(self):
         t = Transport(self._options)
         t.connect()
         t.usequeue('worker-status')
-        try:
-            if self._verbose > 2:
-                print "consuming beekeeper-end"
-            t.consume('beekeeper-end', 'm0', self.shutdown_phase)
-        except amqp.AMQPChannelException, e:
-            print "Error received when trying to consume from queue 'beekeeper-end': %s" % e[1]
-            t.close()
-            return
         if self._verbose > 2:
             print "consuming worker-status"
-        t.consume('worker-status', 'm1', self.worker_status)
+        t.consume('worker-status', 'worker-status', self.worker_status)
         t.wait()
         t.close()
 
-    # basic_cancel() with a consumer tag to stop the consume(), or it will consume forever
-    # http://hg.barryp.org/py-amqplib/raw-file/tip/docs/overview.txt
-    def stop(self, msg):
-        msg.channel.basic_cancel('m0')
-        msg.channel.basic_cancel('m1')
-
-    def shutdown_phase(self, msg):
-        debug('received shutdown message: %s', msg.body)
-        self._shutdownphase = True
-        if self._workercount > 0 and msg.body != Messages.TerminateBeeKeeper:
-            for w in range(self._workercount):
-                debug('sending %s %d/%d.',
-                      Messages.StopWorker,
-                      w+1,
-                      self._workercount)
-                msg.channel.basic_publish(
-                    amqp.Message(Messages.StopWorker),
-                    amqp_exchange,
-                    'worker-job')
-        else:
-            debug('stopping beekeeper')
-            # We can stop immediately because we are not waiting for
-            # any workers to shutdown:
-            self.stop(msg)
         
 
-# How we encode sequences of queries
-#@traced_func
-def _job_encode(job, data_list):
-    escaped_items = [
-        item.replace('~', '~t').replace('|', '~p')
-        for item in [job] + data_list]
-    return '|'.join(escaped_items)
-
-def _job_decode(message):
-    escaped_items = message.split('|')
-    data_list = [
-        item.replace('~p', '|').replace('~t', '~')
-        for item in escaped_items]
-    job = data_list.pop(0)
-    return (job, data_list)
-
-
-class QueenBee(object):
+class QueenBee(ChildProcess):
     """A QueenBee process that distributes sequences of events"""
     
     def __init__(self, options, arguments):
+        super(QueenBee, self).__init__()
+
         self._options = options
         self._verbose = options.verbose
-        self._transport = Transport(options)
-        self._send = self._transport.send
-        self._jobs = {}        
-        self._logtime = time.time()
-        self._lastresult = time.time()
-        
-        if options.preprocess:
-            self._preprocessed_file = open(options.preprocess, "wb")
-            self._num_preprocessed = 0
-            self._preprocess_start_time = time.time()
-            self._send = self._save_message
+        self._sequence_file = arguments[0]
+        self._time_scale = 1.0 / options.speedup
+        self._last_warning = 0
+        self.jobs_sent = Value('L', 0)
     
-    def _save_message(self, queue, msg):
-        self._num_preprocessed += 1
+    def run_child_process(self):
+        transport = Transport(self._options)
+        transport.connect()
+        transport.queue('worker-job', clean=True)
         
-        if self._options.verbose and self._num_preprocessed % 10000 == 0:
-            elapsed = time.time() - self._preprocess_start_time
-            print "preprocessed %d jobs in %s seconds (%.2f events/sec)..." % (self._num_preprocessed, elapsed, float(self._num_preprocessed) / float(elapsed))
+        start_time = time.time()
         
-        cPickle.dump(msg, file=self._preprocessed_file)
-    
-    # Methods to override in subclasses
+        sequence_file = open(self._sequence_file, 'rb')
 
-    def next(self):
-        """generate the next event
+        job_num = 0
 
-        Should call one of the following:
-            self.start(seq)
-            self.event(seq, data)
-            self.end(seq)
-
-        return False if there are no more events, True otherwise
-        """
-        raise NotImplemented("next() method should be implemented in child class")
-
-    def result(self, seq, data):
-        """The result returned by the workerbee"""
-        raise NotImplemented("result() method should be implemented in child class")
-        
-    # methods that are sent by subclasses, from next()
-    
-    def start(self, job):
-        if job not in self._jobs:
-            self._jobs[job] = []
-    
-    def event(self, job, data):
-        if job not in self._jobs:
-            self._jobs[job] = [data]
-        else:
-            self._jobs[job].append(data)
-    
-    def end(self, job):
-        if job not in self._jobs:
-            return;
-        data_list = self._jobs[job]
-        del self._jobs[job]
-        message = _job_encode(job, data_list)
-        self._beekeeper.queenbee_start(job)
-        self._send("worker-job", message)
-        self._beekeeper.queenbee_end(job)
-        
-    def flush_results(self):
-        try:
-            while True:
-                r = self._beekeeper.results.get(block=False)
+        while True:
+            try:
+                job = cPickle.load(sequence_file)
+                job_num += 1
                 
-                self.result(r[0], r[1])
-        except Empty:
-            pass
-            
-    def log(self, msg):
-        t = time.time()
-        # time elapsed between each action and the next action 
-        print ("(%8.4f) %s -> %s" % (t - self._logtime, t, self._logtime)), msg
-        self._logtime = t
-    
-    def _preprocess(self):
-        # Make sure that beekeeper doesn't slow us down.
-        self._options.throttle = False
-        
-        try:
-            # initialization of self._send in __init__ will take care of 
-            # capturing messages
-            start_time = time.time()
-
-            while self.next():
-                pass
-        finally:
-            self._preprocessed_file.close()
-    
-    def main(self):
-        print "Initializing BeeKeeper"
-
-        self._transport.connect()
-        self._transport.queue('beekeeper-end', clean=True)
-        self._transport.queue('worker-job', clean=True)
-
-        self._beekeeper = BeeKeeper(self._options)
-        beekeeper_thread = threading.Thread(target=self._beekeeper.run)
-        beekeeper_thread.setDaemon(True)
-        beekeeper_thread.start()
-        
-        if self._options.preprocess:
-            return self._preprocess()
-        
-        try:
-            while self.next():
-                self.flush_results()
-        except KeyboardInterrupt:
-            print "Interrupted, shutting down..."
-            
-        # *FIX: This is probably related to the bug in http where the same span gets repeatedly re-inserted.
-        for job in self._jobs.keys():
-            self.end(job)
-       
-        while self._beekeeper.not_done():
-            self.flush_results()
-            time.sleep(1.0)
-
-        self.flush_results()
-
-        self._send('beekeeper-end', Messages.StopBeeKeeper)
-        
-        start = time.time()
-        
-        while beekeeper_thread.is_alive():
-            time.sleep(1)
-            if time.time() - start >= 60:
-                debug('Some WorkerBees did not report back that they had halted; terminating beekeeper anyway.')
-                self._send('beekeeper-end', Messages.TerminateBeeKeeper)
+                # Jobs look like this:
+                # (job_id, ((time, SQL), (time, SQL), ...))
+                
+                # The job is ready to shove onto the wire as is.  However, 
+                # let's check to make sure we're not falling behind, and 
+                # throttle sending so as not to overfill the queue.
+                
+                if not self._options.asap and len(job[1]) > 0:
+                    base_time = job[1][0][0]
+                    offset = base_time * self._time_scale - (time.time() - start_time)
+                    
+                    if offset > self._options.max_ahead:
+                        time.sleep(offset - self._options.max_ahead)
+                    elif offset < -10.0:
+                        if time.time() - self._last_warning > 60:
+                            print "WARNING: Queenbee is %0.2f seconds behind." % (-offset)
+                            last_warning = time.time()
+                
+                message = Message(Message.JOB, job)
+                message = cPickle.dumps(message)
+                transport.send('worker-job', message)
+            except EOFError:
                 break
         
-        beekeeper_thread.join()
+        self.jobs_sent.value = job_num
 
-        # close the queues
-        if self._verbose > 2:
-            print "closing transport"
-        self._transport.close()
-
-
-# identify the worker threads in the logging
-_randomized = False
-def genWorkerID():
-    global _randomized
-    if not _randomized:
-        random.jumpahead(os.getpid())
-        _randomized = True
-    return "worker-%02d-%02d-%02d" % (
-        random.randint(0,99),
-        random.randint(0,99),
-        random.randint(0,99))
-
-class WorkerBee(object):
+class WorkerBee(ChildProcess):
     """A WorkerBee that processes a sequences of events"""
     
-    def __init__(self, options, arguments):
+    def __init__(self, options):
+        super(WorkerBee, self).__init__()
+        
+        self._options = options
         self._asap = options.asap
-        self._error = False
-        self._errormsg = ''
-        self._id = genWorkerID()
-        self._transport = Transport(options)
-        self._send = self._transport.send
         self._verbose = options.verbose >= 1
-        self._logtime = time.time()
-        self._wait_for_more = True
+        self._debug = options.debug
+        self._no_mysql = options.no_mysql
+        self._connect_options = {}
+        self._connect_options['host'] = options.mysql_host
+        self._connect_options['port'] = options.mysql_port
+        self._connect_options['user'] = options.mysql_user
+        self._connect_options['passwd'] = options.mysql_passwd
+        self._connect_options['db'] = options.mysql_db
+        self._start_time = time.time()
+        self._time_scale = 1.0 / options.speedup
     
-    # Methods to override in subclasses
+    def status(self, status, body=None):
+        self._transport.send('worker-status', cPickle.dumps(Message(status, body)))
     
-    def start(self):
-        """start of a sequence of events"""
-        raise NotImplemented("start() method should be implemented by child class")
-    
-    def event(self, data):
-        """an event in a sequence"""
-        raise NotImplemented("event() method should be implemented by child class")
-    
-    def end(self):
-        """the end of a sequence"""
-        return ''
-    
-    def log(self, msg):
-        if self._verbose < 1:
-            return
-        t = time.time()
-        # print time elapsed between each event and the next event 
-        print ("%s (%8.4f) %s -> %s" % (self._id, t - self._logtime, t, self._logtime)), msg
-        self._logtime = t
-    
-
-    # Implementation
-    
-    def main(self):
-        self._transport.connect()
-        self._transport.usequeue('worker-job')
-        self._transport.usequeue('worker-status')
-        self._send('worker-status', Messages.WorkerNew)
-
-        consumertag = 'm0'
-
-        def handle_message(amqpmsg):
-            body = amqpmsg.body
-            if body == Messages.StopWorker:
-                debug('Received %s.', Messages.StopWorker)
-                self._wait_for_more = False
-                self._send('worker-status', Messages.WorkerHalted)
-                self._transport._ch.basic_cancel(consumertag)
+    def process_job(self, msg):
+        message = cPickle.loads(msg.body)
+        
+        if message.type == Message.STOP_WORKER:
+            msg.channel.basic_cancel('worker-job')
+            msg.channel.basic_ack(msg.delivery_tag)
+        elif message.type == Message.JOB:
+            # Jobs look like this:
+            # (job_id, ((time, SQL), (time, SQL), ...))
+            
+            job_id, tasks = message.body
+            
+            self.status(Message.JOB_STARTED)
+            
+            if self._no_mysql:
+                self.status(Message.JOB_COMPLETED)
                 return
 
-            (job, data_list) = _job_decode(amqpmsg.body)
+            try:
+                connection = MySQLdb.connect(**self._connect_options)
+            except Exception, e:
+                self.status(Message.JOB_ERROR, str(e))
+                return
+            
+            for timestamp, query in tasks:
+                target_time = timestamp * self._time_scale + self._start_time
+                offset = target_time - time.time()
+                
+                # TODO: warn if falling behind?
+                
+                if offset > 0:
+                    #if self._verbose:
+                    debug('sleeping %0.4f seconds' % offset)
+                    if offset > 120 and self._verbose:
+                        print "long wait of %ds for job %s" % (offset, job_id)
+                    time.sleep(offset)
+                
+                query = query.strip()
+                if query and query != "Quit": # "Quit" is for compatibility with a bug in genjobs.py.  TODO: remove this
+                    try:
+                        cursor = connection.cursor()
+                        rows = cursor.execute(query)
+                        if rows:
+                            cursor.fetchall()
+                        cursor.close()
+                    except Exception, e: # TODO: more restrictive error catching?
+                        self.status(Message.JOB_ERROR, "%s" % e)
+                        
+                        try:
+                            cursor.close()
+                            connection.close()
+                        except:
+                            pass
+                        
+                        msg.channel.basic_ack(msg.delivery_tag)
+                        return
+            
+            try:
+                connection.close()
+            except:
+                pass
+            
+            self.status(Message.JOB_COMPLETED)
+            msg.channel.basic_ack(msg.delivery_tag)
+    
+    def run_child_process(self):
+        if not self._debug:
+            warnings.filterwarnings('ignore', category=MySQLdb.Warning)
+    
+        self._transport = Transport(self._options)
+        self._transport.connect()
+        self._transport.set_prefetch(1)
+        self._transport.usequeue('worker-job')
+        self._transport.usequeue('worker-status')
+        self.status(Message.WORKER_NEW)
 
-            self._send('worker-status', 'start,' + job)
-            self.log("starting job")
-            self.start()
-            for item in data_list:
-                self.event(item)
-            result = self.end()
-            self.log("ending job")
-            self._send('worker-status', 'end,' + job + ',' + result)
-
-        self._transport._ch.basic_consume('worker-job',
-                                          consumer_tag=consumertag,
-                                          callback=handle_message,
-                                          no_ack=True,
-                                          exclusive=False)
-
-        while self._wait_for_more:
-            self._transport._ch.wait()
+        self._transport.consume('worker-job', 'worker-job', self.process_job, exclusive=False)
+        self._transport.wait()
+        self.status(Message.WORKER_HALTED)
         debug("worker ended")
         self._transport.close()
         self._transport = None
@@ -461,18 +368,30 @@ class WorkerBee(object):
 def clean(options):
     transport = Transport(options)
     transport.connect()
-    transport.queue('beekeeper-end')
     transport.queue('worker-job')
     transport.queue('worker-status')
     transport.close()
 
 
-class Messages (object):
-    WorkerNew = 'worker-new'
-    WorkerHalted = 'worker-halted'
-    StopWorker = 'stop-worker'
-    StopBeeKeeper = 'stop-beekeeper'
-    TerminateBeeKeeper = 'terminate-beekeper'
+class Message (object):
+    WORKER_NEW = 1
+    WORKER_HALTED = 2
+    STOP_WORKER = 3
+    STOP_STATS_GATHERER = 4
+    JOB_STARTED = 5
+    JOB_COMPLETED = 6
+    JOB_ERROR = 7
+    JOB = 8
+    
+    def __init__(self, type, body=None):
+        self.type = type
+        self.body = body
+    
+    def __str__(self):
+        return repr(self)
+        
+    def __repr__(self):
+        return "Message(%s, %s)" % (self.type, repr(self.body))
 
 
 def add_options(parser):
@@ -483,62 +402,59 @@ def add_options(parser):
                       help='Print profiling data.  This will impact performance.')
     parser.add_option('--debug', default=False, action='store_true', dest='debug',
                       help='Print debug messages.')
-
-    # Option groups:
-    for name, addopts in [('AMQP', add_amqp_options),
-                          ('QueenBee', add_queenbee_options),
-                          ('WorkerBee', add_workerbee_options)]:
-        g = optparse.OptionGroup(parser, '%s options' % name)
-        addopts(g)
-        parser.add_option_group(g)
-
-
-def add_amqp_options(parser):
-    parser.add_option('--amqp-host',
-                      default=amqp_host, metavar='HOST',
-                      help='AMQP server to connect to (default: %default)')
-    parser.add_option('--amqp-vhost',
-                      default=amqp_vhost, metavar='PATH',
-                      help='AMQP virtual host to use (default: %default)')
-    parser.add_option('--amqp-userid',
-                      default=amqp_userid, metavar='USER',
-                      help='AMQP userid to authenticate as (default: %default)')
-    parser.add_option('--amqp-password',
-                      default=amqp_password, metavar='PW',
-                      help='AMQP password to authenticate with (default: %default)')
-    parser.add_option('--amqp-ssl',
-                      action='store_true', default=False,
-                      help='Enable SSL (default: not enabled)')
-    return parser
-
-
-def add_queenbee_options(parser):
-    parser.add_option('-c', '--queenbee',
-                      default=False, action='store_true',
-                      help='run a queenbee (queenbee job distributor)')
-    parser.add_option('--preprocess', metavar="FILE",
-                      help="""Don't actually send jobs to workers, instead 
-                      preprocess them into a form that may be used by the 
-                      "preprocessed" protocol, and save them in FILE.  
-                      Preprocessed jobs can be sent to rabbitmq much more 
-                      quickly.""")
-    parser.add_option('--throttle',
-                      default=False, action='store_true',
-                      help='attempt to throttle jobs in queue')
-    
-    return parser
-    
-
-def add_workerbee_options(parser):
     parser.add_option('--asap',
                       action='store_true', default=False,
                       help='send queries as fast as possible (default: off)')
-    parser.add_option('-w', '-f', '--workers', metavar='N',
-                      default=0, type='int',
-                      help='fork N workerbee processes (default: 0)')
-    parser.add_option('-b', '--background', default=False,
-                      action='store_true', help="Detach after forking workers.")
+    parser.add_option('-w', '--workers', metavar='N',
+                      default=100, type='int',
+                      help='number of worker bee processes (default: 100)')
     parser.add_option('--clean',
                       action='store_true', default=False,
-                      help='clean up all queues, causing old workers to quit')
-    return parser
+                      help='clean up all queues')
+    parser.add_option('--speedup', default=1.0, dest='speedup', type='float',
+                      help="Time multiple used when replaying query logs.  2.0 means "
+                           "that queries run twice as fast (and the entire run takes "
+                           "half the time the capture ran for).")
+    parser.add_option('--max-ahead', default=300, type='int', metavar='SECONDS',
+                      help='''How many seconds ahead the QueenBee may get in sending
+                           jobs to the queue.  Only change this if RabbitMQ runs out
+                           of memory.''')
+    
+    # Option groups:
+    g = optparse.OptionGroup(parser, 'AMQP options')
+    g.add_option('--amqp-host',
+                      default="localhost", metavar='HOST',
+                      help='AMQP server to connect to (default: %default)')
+    g.add_option('--amqp-vhost',
+                      default="/apiary", metavar='PATH',
+                      help='AMQP virtual host to use (default: %default)')
+    g.add_option('--amqp-userid',
+                      default="apiary", metavar='USER',
+                      help='AMQP userid to authenticate as (default: %default)')
+    g.add_option('--amqp-password',
+                      default="beehonest", metavar='PW',
+                      help='AMQP password to authenticate with (default: %default)')
+    g.add_option('--amqp-ssl',
+                      action='store_true', default=False,
+                      help='Enable SSL (default: not enabled)')
+    parser.add_option_group(g)
+
+    g = optparse.OptionGroup(parser, 'MySQL options')
+    g.add_option('--no-mysql', default=False, dest='no_mysql', action='store_true',
+                      help="Don't make mysql connections.  Return '200 OK' instead.")
+    g.add_option('--mysql-host',
+                      default="localhost", metavar='HOST',
+                      help='MySQL server to connect to (default: %default)')
+    g.add_option('--mysql-port',
+                      default=3306, type='int', metavar='PORT',
+                      help='MySQL port to connect on (default: %default)')
+    g.add_option('--mysql-user',
+                      default='guest', metavar='USER',
+                      help='MySQL user to connect as (default: %default)')
+    g.add_option('--mysql-passwd',
+                      default='', metavar='PW',
+                      help='MySQL password to connect with (default: %default)')
+    g.add_option('--mysql-db',
+                      default='test', metavar='DB',
+                      help='MySQL database to connect to (default: %default)')
+    parser.add_option_group(g)

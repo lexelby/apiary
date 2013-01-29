@@ -24,13 +24,37 @@
 #
 
 import sys
+import cPickle
 
 from sqllog import *
 
-class GenerateSequences(CoalesceSequences):        
+class GenerateJobs(CoalesceSequences):
+    def __init__(self, *args, **kwargs):
+        super(GenerateJobs, self).__init__(*args, **kwargs)
+        
+        self._base_time = None
+    
     def fullSequence(self, e):
-        sys.stdout.write(str(e))
+        # Jobs look like this:
+        # (job_id, ((time, SQL), (time, SQL), ...))
+        
+        tasks = []
+        
+        for event in e.events():
+            if event.state == event.Query:
+                timestamp = float(event.time)
+                
+                if not self._base_time:
+                    self._base_time = timestamp
+                
+                
+                tasks.append((timestamp - self._base_time, event.body))
+        
+        job = (e.id, tuple(tasks))
+        
+        cPickle.dump(job, file=sys.stdout)
+        
 
 if __name__ == '__main__':
-    f = GenerateSequences()
-    f.replay(input_events(sys.argv[1:]))    
+    f = GenerateJobs()
+    f.replay(input_events(sys.argv[1:]))

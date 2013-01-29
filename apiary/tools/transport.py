@@ -38,6 +38,12 @@ class ConnectionError(Exception):
     pass
 
 
+amqp_host = 'localhost'
+amqp_userid = 'apiary'
+amqp_password = 'beehonest'
+amqp_vhost = '/apiary'
+amqp_exchange = 'b.direct' 
+    
 class Transport(object):
     """A simple message queue-like transport system
     
@@ -52,7 +58,8 @@ class Transport(object):
         self._amqp_vhost = getattr(options, 'amqp_vhost', amqp_vhost)
         self._amqp_userid = getattr(options, 'amqp_userid', amqp_userid)
         self._amqp_password = getattr(options, 'amqp_password', amqp_password)
-        self._verbose = getattr(options, 'verbose', verbose)
+        self._verbose = getattr(options, 'verbose', False)
+        self._no_ack = True
     
     def _server_connect(self):
         try:
@@ -105,6 +112,10 @@ class Transport(object):
             self._ch.queue_purge(queue)
         return queue
 
+    def set_prefetch(self, num_messages):
+        self._no_ack = num_messages == 0
+        self._ch.basic_qos(prefetch_size=0, prefetch_count=num_messages, a_global=False)
+    
     # same as queue(), only without inControl, so it consumes instead of appending 
     def usequeue(self, queue, clean=False):
         self.queue(queue, inControl=False, clean=clean)
@@ -114,13 +125,13 @@ class Transport(object):
         msg = amqp.Message(data)
         self._ch.basic_publish(msg, amqp_exchange, queue)
     
-    def consume(self, queue, tag, fn):
+    def consume(self, queue, tag, fn, exclusive=True):
         fn = traced_func(fn)
         return self._ch.basic_consume(
             queue,
             tag,
-            no_ack=True,
-            exclusive=True,
+            no_ack=self._no_ack,
+            exclusive=exclusive,
             callback=fn)
 
     def cancelconsume(self, tag):

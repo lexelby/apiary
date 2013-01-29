@@ -25,4 +25,4 @@
 
 __version__ = '0.6'
 from base import *
-from main import main, parse_args, run_worker
+from main import main, parse_args
