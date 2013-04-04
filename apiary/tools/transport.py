@@ -30,6 +30,7 @@ consumers.
 '''
 
 import sys
+import socket
 import amqplib.client_0_8 as amqp
 
 from debug import debug, traced_func, traced_method

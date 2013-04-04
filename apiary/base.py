@@ -248,7 +248,7 @@ class QueenBee(ChildProcess):
                     elif offset < -10.0:
                         if time.time() - self._last_warning > 60:
                             print "WARNING: Queenbee is %0.2f seconds behind." % (-offset)
-                            last_warning = time.time()
+                            self._last_warning = time.time()
                 
                 message = Message(Message.JOB, job)
                 message = cPickle.dumps(message)
@@ -337,6 +337,12 @@ class WorkerBee(ChildProcess):
                         
                         msg.channel.basic_ack(msg.delivery_tag)
                         return
+            
+            try:
+                # Sometimes pt-query-digest neglects to mention the commit.
+                cursor.execute('COMMIT;')
+            except:
+                pass
             
             try:
                 connection.close()

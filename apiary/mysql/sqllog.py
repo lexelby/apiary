@@ -428,7 +428,7 @@ class CoalesceSequences(object):
         
     def heartbeat(self, n):
         if self.bytime:
-            sys.stderr.write("front of the queue = %s" % self.bytime[0].id)
+            sys.stderr.write("front of the queue = %s\n" % self.bytime[0].id)
         sys.stderr.write("%s: %d events... (%d connections, %d waiting)\n"
             % (str(self.lasttime - self.starttime), n, len(self.connections), len(self.bytime)))
             
