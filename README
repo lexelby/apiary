@@ -1,20 +1,27 @@
 SUMMARY
 -------
 
-apiary is a distributed, protocol-independent load testing framework, written
-in Python, that replays captured queries, simulating production load patterns.
+apiary is a load-testing framework for MySQL, written in Python, that replays 
+captured queries, simulating production load patterns.
 
 A QueenBee process feeds sequences of one or more messages into an AMQP queue,
 and one or more WorkerBee processes retrieve sequences from the queue, send the
 associated messages to the specified target host, and report their results to
 the BeeKeeper to be tallied.  The QueenBee prints a summary of the progress
-every 15 seconds and when all the WorkerBees are done.
+every 15 seconds and when all the WorkerBees are done.  The QueenBee and 
+WorkerBees work together to attempt to mimic production load patterns as 
+closely as possible, including timing.
 
+Query timing can be slowed down or sped up by an arbitrary factor using the
+--speedup option.  In testing, Apiary has reproduced 30,000 queries per 
+second when run on a powerful test system.  An ideal system will have at least 4
+CPU cores that are as fast as possible.  This is preferable to more cores that
+are slower.  The gating factor tends to be RabbitMQ.
 
 REQUIREMENTS
 ------------
 
-* RabbitMQ 1.6
+* RabbitMQ >= 1.6
 
 * lsprof (if you want to use --profile)
 http://codespeak.net/svn/user/arigo/hack/misc/lsprof/
@@ -31,32 +38,11 @@ RABBITMQ SETUP
 
 To configure a local, running instance of RabbitMQ, execute the following:
 
-    sudo sh bin/setup-rabbitmq.sh
+    sudo bin/apiary_setup_rabbitmq.sh
 
 This will delete the apiary vhost and user, re-add them, and then set up
 the appropriate permissions.  This must be run as root.
 
-
-SAMPLE OUTPUT
--------------
-
-To see sample output from apiary, you can run apiary in --no-mysql mode.
-
-First, start up some worker bees:
-
-  $ bin/apiary -f 10 --protocol mysql --no-mysql
-
-Next, run the queen bee:
-
-  $ bin/apiary --queenbee --protocol mysql doc/examples/example-good-sequences.log
-
-Apiary will pretend to run the queries in the sequence file, and after a few tens
-of seconds, you'll see the sample output.  The --no-mysql switch causes the
-worker bees not to connect to MySQL and to return '200 OK' responses.
-
-If you don't have RabbitMQ running on localhost, you'll need to specify --amqp-*
-options on both the worker bee and queen bee command lines.  Run bin/apiary --help
-for documentation on these options.
 
 TUTORIAL
 --------
@@ -66,37 +52,50 @@ the root user.  Adapt the commands below appropriately if that is not the case.
 
 1. Some sample data is included.  This will create an "apiary_demo" database:
 
-    mysql -u root < data/demo.sql
+    mysql -u root < doc/examples/demo.sql
 
-2. Use tcpdump to capture mysql traffic for maatkit consumption:
+2. Use tcpdump to capture mysql traffic for consumption by pt-query-digest:
 
     sudo tcpdump -i lo port 3306 -s 65535 -x -n -q -tttt> /tmp/tcpdump.out
 
-3. In a separate terminal, run a script that will generate some queries against
-the test data:
+3. In a separate terminal, generate some queries against the test data:
 
-    bin/run-demo-queries.sh
+    while read query; do \
+        mysql -u root -h localhost --protocol=TCP -e "$query" apiary_demo > /dev/null; \
+        sleep 0.1; \
+    done < doc/examples/demo_queries.sql
 
 4. Stop the tcpdump process that you started in step 2.
-5. Turn the tcpdump data into a query digest using maatkit or percona-toolkit:
 
-    mk-query-digest --type=tcpdump --no-report --print /tmp/tcpdump.out > /tmp/apiary_query_digest.txt
+5. Turn the tcpdump data into a query digest using percona-toolkit:
 
-Use pt-query-digest if you have percona-toolkit instead of maatkit.  They both work identically.
+    pt-query-digest --type=tcpdump --no-report --print /tmp/tcpdump.out > /tmp/apiary_query_digest.txt
+
+Use mk-query-digest if you have maatkit instead of percona-toolkit.  They both work identically.
 
 6. Convert the query digest into a sequence file:
 
-    PYTHONPATH=. python apiary/mysql/genseqs.py /tmp/apiary_query_digest.txt > /tmp/apiary_seq.txt
+    bin/genjobs /tmp/apiary_query_digest.txt > /tmp/apiary_test.jobs
 
-7. Run some worker bees:
+7. Run apiary:
+    bin/apiary --workers 10 --mysql-user root --mysql-db apiary_demo --mysql-host localhost /tmp/apiary_test.jobs
 
-    bin/apiary -f 10 --protocol mysql --mysql-host localhost --mysql-user root
+9. Apiary will fork Queenbee, WorkerBee, and Beekeeper processes internally.  
+  They will work together to read and execute your traffic.  Apiary will very
+  quickly print this message:
 
-8. Run the queen bee:
+  Waiting for workers to complete jobs and terminate (may take up to 300 seconds)...
 
-    bin/apiary --queenbee --protocol mysql /tmp/apiary_seq.txt
+  This is because the QueenBee prefills the job queue with up to 300 seconds of query
+  traffic to make sure that the WorkerBees never run out of jobs to run.
 
-9. The queen bee will read the query sequences and push them into the worker-job queue.  The worker
-   bees will execute the jobs and return status back to the beekeeper running inside the queenbee process.
+10. You should see a summary of the results as queries are being executed and
+  after all queries have been replayed.
 
-10. You should see a summary of the results in a few seconds. 
+
+NOTES
+-----
+
+I found this command line useful to reset between tests:
+
+sudo pkill -f rabbitmq; pkill -f bin/apiary; sudo /etc/init.d/rabbitmq-server start; sudo bin/apiary_setup_rabbitmq.sh ; watch -n 1 sudo rabbitmqctl list_queues -p /apiary

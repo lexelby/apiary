@@ -1,0 +1,5 @@
+#!/bin/bash
+
+APIARY_PATH="$(dirname $0)/.."
+
+PYTHONPATH="$APIARY_PATH" python $APIARY_PATH/apiary/mysql/genjobs.py "$@"
