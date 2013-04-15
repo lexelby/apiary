@@ -99,3 +99,12 @@ NOTES
 I found this command line useful to reset between tests:
 
 sudo pkill -f rabbitmq; pkill -f bin/apiary; sudo /etc/init.d/rabbitmq-server start; sudo bin/apiary_setup_rabbitmq.sh ; watch -n 1 sudo rabbitmqctl list_queues -p /apiary
+
+I found these networking settings were useful with large query volumes:
+
+sudo bash -c 'echo 1 > /proc/sys/net/ipv4/tcp_tw_reuse'
+sudo bash -c 'echo 1024 65535 > /proc/sys/net/ipv4/ip_local_port_range'
+
+Otherwise, you may start to see errors like "Could not connect to MySQL host",
+or "resource not available", because the kernel will quickly run out of local 
+ports it's willing to use.
