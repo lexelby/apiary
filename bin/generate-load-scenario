@@ -1,0 +1,240 @@
+#!/usr/bin/env python
+
+"""Generate an apiary jobs file to simulate load.
+
+This allows apiary to work like mysqlslap.  Given a number of concurrent
+connections and a target queries-per-second value, this script generates
+an apiary jobs file and an sql file with schema and initial data.
+
+Currently, queries come deterministically every 1/QPS seconds, but
+randomness could be added fairly easily.
+"""
+
+import sys
+import optparse
+import random
+import binascii
+import cPickle
+from collections import deque
+
+LOWER_BOUND = 10**29
+UPPER_BOUND = 10**30
+def random_string():
+    return binascii.b2a_base64(bytes(random.randrange(LOWER_BOUND, UPPER_BOUND)))[:40]
+
+def get_column_names(num_char_cols, num_int_cols):
+    cols = ["id"]
+    cols += ["charCol%d" % i for i in xrange(num_char_cols)]
+    cols += ["intCol%d" % i for i in xrange(num_int_cols)]
+
+    return cols
+
+def generate_insert(table, col_names, num_char_cols, num_int_cols, id_value):
+    values = ["'%s'" % random_string() for i in xrange(num_char_cols)]
+    values += [str(random.randint(0, 2147483647)) for i in xrange(num_int_cols)]
+    values = ",".join(values)
+
+    return "INSERT INTO %s (%s) VALUES ('%s',%s);" % \
+        (table, ",".join(col_names), id_value, values)
+
+
+def client_job(database, table, num_char_cols, num_int_cols, num_inserts, num_selects):
+    """Produces a generator for a single client's queries."""
+
+    yield "USE %s;" % database
+    yield "START TRANSACTION;"
+
+    cols = get_column_names(num_char_cols, num_int_cols)
+    col_names = ",".join(cols)
+
+    id_values = [random_string() for i in xrange(num_inserts)]
+
+    for i in xrange(num_inserts):
+        yield generate_insert(table, cols, num_char_cols, num_int_cols, id_values[i])
+
+    for i in xrange(num_selects):
+        yield "SELECT %s FROM %s WHERE id = '%s';" % \
+            (random.choice(cols), table, random.choice(id_values))
+
+    for i in xrange(num_inserts):
+        yield "DELETE FROM %s WHERE id = '%s';" % (table, id_values[i])
+
+    yield "COMMIT;"
+
+def generate_schema(database, table, num_char_cols, num_int_cols):
+    """Produces a generator that creates the schema."""
+    yield "DROP DATABASE IF EXISTS %s;" % database
+    yield "CREATE DATABASE %s;" % database
+
+    create_statement = "CREATE TABLE %s.%s (" % (database, table)
+    create_statement += "id varchar(40) NOT NULL"
+    create_statement += ",INDEX id_idx (id)"
+
+    for i in xrange(num_char_cols):
+        create_statement += ",charCol%d varchar(40)" % i
+
+    for i in xrange(num_int_cols):
+        create_statement += ",intCol%d INT" % i
+
+    create_statement += ");"
+
+    yield create_statement
+
+def generate_data(database, table, num_char_cols, num_int_cols, num_rows):
+    yield "USE %s;" % database
+
+    cols = get_column_names(num_char_cols, num_int_cols)
+
+    for i in xrange(num_rows):
+        yield generate_insert(table, cols, num_char_cols, num_int_cols, random_string())
+
+def main(argv):
+    parser = optparse.OptionParser("%prog [options] TEST_NAME",
+                                   description="Generate a schema and an apiary jobs file.  The schema is saved as TEST_NAME.sql, and the jobs file is TEST_NAME.jobs")
+
+    parser.add_option('-c', '--num-char-cols',
+                      type="int",
+                      default=5,
+                      metavar="NUM",
+                      help="number of varchar columns (default: 5)")
+    parser.add_option('-i', '--num-int-cols',
+                      type="int",
+                      default=5,
+                      metavar="NUM",
+                      help="number of integer columns (default: 5)")
+    parser.add_option('-d', '--database',
+                      default="apiary",
+                      help="database name to use (default: apiary)")
+    parser.add_option('-t', '--table',
+                      help="table name to use (default: TEST_NAME)")
+    parser.add_option('-r', '--num-rows',
+                      type='int',
+                      default=100000,
+                      help="initial number of rows to populate table with (default: 100000)")
+    parser.add_option('-q', '--qps',
+                      type='int',
+                      default=200,
+                      help="target queries per second (QPS) value (default: 200)")
+    parser.add_option('-n', '--num-clients',
+                      type='int',
+                      default=30,
+                      help="target number of concurrently connected clients")
+    parser.add_option('--num-inserts-per-client',
+                      type='int',
+                      default=10,
+                      help="number of inserts each client should perform")
+    parser.add_option('--num-selects-per-client',
+                      type='int',
+                      default=10,
+                      help="number of selects each client should perform")
+    parser.add_option('-s', '--num-seconds',
+                      type='int',
+                      default=300,
+                      help="approximate number of seconds worth of queries to generate (default: 300)")
+    parser.add_option('--seed',
+                      type='int',
+                      help="random seed")
+
+    options, args = parser.parse_args(argv)
+
+    if len(args) != 1:
+        print "Incorrect number of non-option arguments."
+        parser.print_usage()
+        return 1
+
+    test_name = args[0]
+
+    if not options.table:
+        options.table = test_name
+
+    if options.seed:
+        random.seed(options.seed)
+
+    schema_file = open("%s.sql" % test_name, 'w')
+
+    print >> sys.stderr, "Generating schema..."
+    for line in generate_schema(options.database,
+                                options.table,
+                                options.num_char_cols,
+                                options.num_int_cols):
+        print >> schema_file, line
+
+    print >> schema_file
+
+    print >> sys.stderr, "Generating initial data..."
+    for line in generate_data(options.database,
+                              options.table,
+                              options.num_char_cols,
+                              options.num_int_cols,
+                              options.num_rows):
+        print >> schema_file, line
+
+    schema_file.close()
+    print >> sys.stderr, "%s.sql generated." % test_name
+
+    jobs_file = open("%s.jobs" % test_name, 'w')
+    print >> sys.stderr, "Generating jobs..."
+
+    # a "tick" represents 1/QPS seconds
+    tick_length = 1.0 / options.qps
+    num_ticks = options.qps * options.num_seconds
+    next_client_id = 1
+
+    jobs = []
+
+    clients = deque()
+    client_to_id = {}
+    client_queries = {}
+
+    tick = 0
+
+    while tick < num_ticks or len(clients) > 0:
+        tick += 1
+
+
+        if tick == num_ticks:
+            print >> sys.stderr, "generated requested number of seconds, waiting for %d clients to complete" % len(clients)
+
+        tick_timestamp = tick_length * tick
+
+        if tick < num_ticks:
+            if tick % options.qps == 0:
+                print >> sys.stderr, "Generated second %d" % (tick / options.qps)
+
+            while(len(clients) < options.num_clients):
+                client = client_job(options.database,
+                                    options.table,
+                                    options.num_char_cols,
+                                    options.num_int_cols,
+                                    options.num_inserts_per_client,
+                                    options.num_selects_per_client)
+                client_to_id[id(client)] = next_client_id
+                client_queries[next_client_id] = []
+                next_client_id += 1
+
+                clients.append(client)
+
+        # Take one statement from one client per tick
+        client = clients.popleft()
+        client_id = client_to_id[id(client)]
+
+        try:
+            statement = client.next()
+            client_queries[client_id].append((tick_timestamp, statement))
+
+            # move the client to the back of the line
+            clients.append(client)
+        except StopIteration:
+            job = (client_id, tuple(client_queries[client_id]))
+            cPickle.dump(job, file=jobs_file)
+
+            del client_queries[client_id]
+            del client_to_id[id(client)]
+
+    print >> sys.stderr, "total load scenario time: %0.2fs" % (tick * tick_length)
+
+    jobs_file.close()
+    print >> sys.stderr, "%s.jobs generated" % test_name
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))
