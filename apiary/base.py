@@ -277,6 +277,12 @@ class WorkerBee(ChildProcess):
         self._connect_options['db'] = options.mysql_db
         self._start_time = time.time()
         self._time_scale = 1.0 / options.speedup
+
+        if options.mysql_host.startswith('@'):
+            self.dynamic_host = True
+            self.dynamic_host_file = options.mysql_host[1:]
+        else:
+            self.dynamic_host = False
     
     def status(self, status, body=None):
         self._transport.send('worker-status', cPickle.dumps(Message(status, body)))
@@ -298,6 +304,10 @@ class WorkerBee(ChildProcess):
             if self._no_mysql:
                 self.status(Message.JOB_COMPLETED)
                 return
+
+            if self.dynamic_host:
+                with open(self.dynamic_host_file) as f:
+                    self._connect_options['host'] = f.read().strip()
 
             try:
                 connection = MySQLdb.connect(**self._connect_options)
