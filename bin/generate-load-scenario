@@ -64,7 +64,7 @@ def client_job(database, table, num_char_cols, num_int_cols, num_inserts, num_se
 def generate_schema(database, table, num_char_cols, num_int_cols):
     """Produces a generator that creates the schema."""
     yield "CREATE DATABASE IF NOT EXISTS %s;" % database
-    yield "DROP TABLE IF EXISTS %s.%s" % (database, table)
+    yield "DROP TABLE IF EXISTS %s.%s;" % (database, table)
 
     create_statement = "CREATE TABLE %s.%s (" % (database, table)
     create_statement += "id varchar(40) NOT NULL"
