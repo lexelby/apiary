@@ -275,6 +275,7 @@ class WorkerBee(ChildProcess):
         self._connect_options['user'] = options.mysql_user
         self._connect_options['passwd'] = options.mysql_passwd
         self._connect_options['db'] = options.mysql_db
+        self._connect_options['read_timeout'] = options.mysql_read_timeout
         self._start_time = time.time()
         self._time_scale = 1.0 / options.speedup
 
@@ -308,9 +309,15 @@ class WorkerBee(ChildProcess):
             if self.dynamic_host:
                 with open(self.dynamic_host_file) as f:
                     self._connect_options['host'] = f.read().strip()
-
             try:
-                connection = MySQLdb.connect(**self._connect_options)
+                try:
+                    connection = MySQLdb.connect(**self._connect_options)
+                except TypeError, e:
+                    # Using a python-mysqldb version that does not have
+                    # read_timeout patch from
+                    # http://sourceforge.net/p/mysql-python/patches/75/
+                    del self._connect_options['read_timeout']
+                    connection = MySQLdb.connect(**self._connect_options)
             except Exception, e:
                 self.status(Message.JOB_ERROR, str(e))
                 return
@@ -473,4 +480,7 @@ def add_options(parser):
     g.add_option('--mysql-db',
                       default='test', metavar='DB',
                       help='MySQL database to connect to (default: %default)')
+    g.add_option('--mysql-read-timeout',
+                      default=10, type='int', metavar='SECONDS',
+                      help='MySQL client read timeout (default: 10)')
     parser.add_option_group(g)
