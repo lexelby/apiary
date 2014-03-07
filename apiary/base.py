@@ -289,11 +289,14 @@ class WorkerBee(ChildProcess):
         self._transport.send('worker-status', cPickle.dumps(Message(status, body)))
     
     def process_job(self, msg):
+        self._process_job(msg)
+        msg.channel.basic_ack(msg.delivery_tag)
+
+    def _process_job(self, msg):
         message = cPickle.loads(msg.body)
         
         if message.type == Message.STOP_WORKER:
             msg.channel.basic_cancel('worker-job')
-            msg.channel.basic_ack(msg.delivery_tag)
         elif message.type == Message.JOB:
             # Jobs look like this:
             # (job_id, ((time, SQL), (time, SQL), ...))
@@ -352,7 +355,6 @@ class WorkerBee(ChildProcess):
                         except:
                             pass
                         
-                        msg.channel.basic_ack(msg.delivery_tag)
                         return
             
             try:
@@ -367,7 +369,6 @@ class WorkerBee(ChildProcess):
                 pass
             
             self.status(Message.JOB_COMPLETED)
-            msg.channel.basic_ack(msg.delivery_tag)
     
     def run_child_process(self):
         if not self._debug:
