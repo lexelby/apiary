@@ -312,18 +312,8 @@ class WorkerBee(ChildProcess):
             if self.dynamic_host:
                 with open(self.dynamic_host_file) as f:
                     self._connect_options['host'] = f.read().strip()
-            try:
-                try:
-                    connection = MySQLdb.connect(**self._connect_options)
-                except TypeError, e:
-                    # Using a python-mysqldb version that does not have
-                    # read_timeout patch from
-                    # http://sourceforge.net/p/mysql-python/patches/75/
-                    del self._connect_options['read_timeout']
-                    connection = MySQLdb.connect(**self._connect_options)
-            except Exception, e:
-                self.status(Message.JOB_ERROR, str(e))
-                return
+
+            connection = None
             
             for timestamp, query in tasks:
                 target_time = timestamp * self._time_scale + self._start_time
@@ -337,6 +327,20 @@ class WorkerBee(ChildProcess):
                     if offset > 120 and self._verbose:
                         print "long wait of %ds for job %s" % (offset, job_id)
                     time.sleep(offset)
+
+                if connection is None:
+                    try:
+                        try:
+                            connection = MySQLdb.connect(**self._connect_options)
+                        except TypeError, e:
+                            # Using a python-mysqldb version that does not have
+                            # read_timeout patch from
+                            # http://sourceforge.net/p/mysql-python/patches/75/
+                            del self._connect_options['read_timeout']
+                            connection = MySQLdb.connect(**self._connect_options)
+                    except Exception, e:
+                        self.status(Message.JOB_ERROR, str(e))
+                        return
                 
                 query = query.strip()
                 if query and query != "Quit": # "Quit" is for compatibility with a bug in genjobs.py.  TODO: remove this
