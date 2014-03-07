@@ -189,9 +189,9 @@ def main(argv):
     tick = 0
     # spawn clients such that they're evenly distributed across the entire time
     # each client takes
-    ramp_up_time = (2 +
-                    options.num_inserts_per_client * 2 +
-                    options.num_selects_per_client) * options.num_clients
+    ramp_up_ticks = (2 +
+                     options.num_inserts_per_client * 2 +
+                     options.num_selects_per_client) * options.num_clients
 
     while tick < num_ticks or len(clients) > 0:
         tick += 1
@@ -207,7 +207,7 @@ def main(argv):
                 print >> sys.stderr, "Generated second %d" % (tick / options.qps)
 
             while ((len(clients) < options.num_clients) and
-                   float(len(clients))/options.num_clients < (float(tick)/(options.qps * ramp_up_time))):
+                   float(len(clients))/options.num_clients < (float(tick)/ramp_up_ticks)):
                 print >> sys.stderr, "spawn client %d at tick %d" % (next_client_id, tick)
                 client = client_job(options.database,
                                     options.table,
@@ -220,6 +220,8 @@ def main(argv):
                 next_client_id += 1
 
                 clients.append(client)
+
+        print "tick: %d clients: %d" % (tick, len(clients))
 
         # Take one statement from one client per tick
         client = clients.popleft()
