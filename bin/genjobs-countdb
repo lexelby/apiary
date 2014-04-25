@@ -1,0 +1,282 @@
+#!/usr/bin/python
+# Copyright (c) 2003 CORE Security Technologies
+#
+# This software is provided under under a slightly modified version
+# of the Apache Software License. See the accompanying LICENSE file
+# for more information.
+#
+# $Id: split.py 17 2003-10-27 17:36:57Z jkohen $
+#
+# Pcap dump splitter.
+#
+# This tools splits pcap capture files into smaller ones, one for each
+# different TCP/IP connection found in the original.
+#
+# Authors:
+#  Alejandro D. Weil <aweil@coresecurity.com>
+#  Javier Kohen <jkohen@coresecurity.com>
+#
+# Reference for:
+#  pcapy: open_offline, pcapdumper.
+#  ImpactDecoder.
+
+import sys
+import string
+from exceptions import Exception
+from threading import Thread
+import heapq
+import cPickle
+import json
+
+import pcapy
+from pcapy import open_offline
+import impacket
+from impacket.ImpactDecoder import EthDecoder, LinuxSLLDecoder
+
+# Maximum number of packets before we start a new stream.  This causes load
+# simulation to break and reopen connections where, in reality, a long-lived
+# connection existed.  We have to do this to avoid running out of memory while
+# parsing.
+MAX_PACKETS_PER_STREAM = 1024
+
+# If we don't see any packets on a stream for this many seconds, assume it's
+# closed and we missed the FIN.
+STREAM_TIMEOUT = 300
+
+base_timestamp = None
+
+class Connection:
+    """This class can be used as a key in a dictionary to select a connection
+    given a pair of peers. Two connections are considered the same if both
+    peers are equal, despite the order in which they were passed to the
+    class constructor.
+    """
+
+    def __init__(self, p1, p2):
+        """This constructor takes two tuples, one for each peer. The first
+        element in each tuple is the IP address as a string, and the
+        second is the port as an integer.
+        """
+
+        self.p1 = p1
+        self.p2 = p2
+
+    def getFilename(self):
+        """Utility function that returns a filename composed by the IP
+        addresses and ports of both peers.
+        """
+        return '%s.%d-%s.%d.pcap'%(self.p1[0],self.p1[1],self.p2[0],self.p2[1])
+
+    def __cmp__(self, other):
+        if ((self.p1 == other.p1 and self.p2 == other.p2)
+            or (self.p1 == other.p2 and self.p2 == other.p1)):
+            return 0
+        else:
+            return -1
+
+    def __hash__(self):
+        return (hash(self.p1[0]) ^ hash(self.p1[1])
+                ^ hash(self.p2[0]) ^ hash(self.p2[1]))
+
+class Stream:
+    def __init__(self, conn):
+        self.conn = conn
+        self.num_packets = 0
+        self.data = []
+        self.last_timestamp = None
+
+    def append(self, current_timestamp, data):
+        self.data.append((current_timestamp, data))
+        self.num_packets += 1
+        self.last_timestamp = current_timestamp
+
+    def done(self, current_timestamp):
+        return (current_timestamp - self.last_timestamp > STREAM_TIMEOUT or
+                self.num_packets >= MAX_PACKETS_PER_STREAM)
+
+    def generate_job(self):
+        job = []
+
+        current_timestamp = None
+        current_request = ""
+
+        def process_message(timestamp, message):
+            # Client requests look like this:
+            #   json <json data>
+            # Server responses are simply a json blob.  We ignore them entirely.
+
+            if message.startswith("json "):
+                request = message[5:]
+
+                try:
+                    # Only valid requests allowed.
+                    json.loads(request)
+                    job.append((timestamp, request))
+                except ValueError:
+                    pass
+
+        for timestamp, message in self.data:
+            # This is a bit tricky because it's possible that a request spanned
+            # more than one packet, and we want to make our best guess as to
+            # the timing for each individual request.
+
+            # If we haven't saved an incomplete request, then use the current
+            # packet's timestamp.
+            if not current_request:
+                current_timestamp = timestamp
+
+            current_request += message
+
+            while True:
+                # Now process all completed messages seen so far.  The first
+                # gets the timestamp of when its first byte was seen.  All
+                # subsequent occur in the current packet, so they get the its
+                # timestamp.
+
+                index = current_request.find("\0")
+
+                if index == -1:
+                    break
+
+                process_message(current_timestamp, current_request[:index])
+                current_request = current_request[index + 1:]
+                current_timestamp = timestamp
+
+        # By this point, we've decoded all COMPLETE messages seen.  We'll ignore
+        # any trailing partial message.
+        return tuple(job)
+
+class Decoder:
+    def __init__(self, pcapObj, jobs_file):
+        # Query the type of the link and instantiate a decoder accordingly.
+        datalink = pcapObj.datalink()
+        if pcapy.DLT_EN10MB == datalink:
+            self.decoder = EthDecoder()
+        elif pcapy.DLT_LINUX_SLL == datalink:
+            self.decoder = LinuxSLLDecoder()
+        else:
+            raise Exception("Datalink type not supported: " % datalink)
+
+        self.pcap = pcapObj
+        self.connections = {}
+        self.next_job_id = 0
+        self.packets_seen = 0
+
+        # This isn't a plain list; we'll use heapq to manage it so that we can
+        # pop streams off in order.
+        self.streams = []
+
+        self.jobs_file = open(jobs_file, 'w')
+
+    def start(self):
+        # Sniff ad infinitum.
+        # PacketHandler shall be invoked by pcap for every packet.
+        self.pcap.loop(0, self.packetHandler)
+
+    def packetHandler(self, hdr, data):
+        """Handles an incoming pcap packet. This method only knows how
+        to recognize TCP/IP connections.
+        Be sure that only TCP packets are passed onto this handler (or
+        fix the code to ignore the others).
+
+        Setting r"ip proto \tcp" as part of the pcap filter expression
+        suffices, and there shouldn't be any problem combining that with
+        other expressions.
+        """
+
+        sec, usec = hdr.getts()
+        current_timestamp = sec + usec / 1000000.0
+
+        global base_timestamp
+        if base_timestamp is None:
+            base_timestamp = current_timestamp
+
+        current_timestamp -= base_timestamp
+
+        self.packets_seen += 1
+        if self.packets_seen % 1000 == 0:
+            print "processed %d packets, timestamp: %f" % (self.packets_seen, current_timestamp)
+
+        # Use the ImpactDecoder to turn the rawpacket into a hierarchy
+        # of ImpactPacket instances.
+        p = self.decoder.decode(data)
+        ip = p.child()
+        tcp = ip.child()
+        body = tcp.child().get_bytes()
+
+        # Build a distinctive key for this pair of peers.
+        src = (ip.get_ip_src(), tcp.get_th_sport() )
+        dst = (ip.get_ip_dst(), tcp.get_th_dport() )
+        con = Connection(src,dst)
+
+        is_close = tcp.get_FIN() or tcp.get_RST()
+
+        # If there isn't an entry associated yetwith this connection,
+        # open a new pcapdumper and create an association.
+        if not self.connections.has_key(con):
+            if is_close:
+                return
+
+            need_heap_push = True
+            stream = Stream(con)
+            self.connections[con] = stream
+        else:
+            stream = self.connections[con]
+            need_heap_push = False
+
+        stream.append(current_timestamp, body.tostring())
+
+        if need_heap_push:
+            heapq.heappush(self.streams, stream)
+
+        if is_close:
+            del self.connections[con]
+
+        self.flush(current_timestamp)
+
+    def flush(self, now):
+        while self.streams[0].done(now):
+            self.flush_job()
+
+    def flush_job(self):
+        if not self.streams:
+            return False
+
+        print "flushing job", self.next_job_id
+
+        stream = heapq.heappop(self.streams)
+        cPickle.dump((self.next_job_id, stream.generate_job()), self.jobs_file)
+        self.next_job_id += 1
+
+        if stream.conn in self.connections:
+            del self.connections[stream.conn]
+
+        return True
+
+    def finish(self):
+        while self.flush_job():
+            pass
+
+        self.jobs_file.close()
+
+def main(pcap_file, jobs_file):
+    # Open file
+    p = open_offline(pcap_file)
+
+    # At the moment the callback only accepts TCP/IP packets.
+    p.setfilter(r'ip proto \tcp')
+
+    print "Reading from %s: linktype=%d" % (pcap_file, p.datalink())
+
+    # Start decoding process.
+    decoder = Decoder(p, jobs_file)
+
+    decoder.start()
+    decoder.finish()
+
+# Process command-line arguments.
+if __name__ == '__main__':
+    if len(sys.argv) < 3:
+        print "Usage: %s <pcap file> <jobs file>" % sys.argv[0]
+        sys.exit(1)
+    main(*sys.argv[1:])
