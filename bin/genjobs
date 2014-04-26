@@ -2,4 +2,4 @@
 
 APIARY_PATH="$(dirname $0)/.."
 
-PYTHONPATH="$APIARY_PATH" python $APIARY_PATH/apiary/mysql/genjobs.py "$@"
+PYTHONPATH="$APIARY_PATH" python $APIARY_PATH/apiary/tools/mysql/genjobs.py "$@"
