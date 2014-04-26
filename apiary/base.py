@@ -25,14 +25,13 @@
 
 
 '''
-This module stores the base classes for the QueenBee, BeeKeeper, and
-WorkerBee classes.  It is responsible for all things related to message
-dispatch and collection.  It contains nothing specific to the target
-protocol, nor to configuration, nor process management.
+This module contains the main Apiary code.  The BeeKeeper spawns and manages
+all subprocesses.  The QueenBee reads jobs from disk and enqueues them in
+RabbitMQ.  WorkerBee is a class to be extended by protocol-specific classes.  It
+contains the basic workings of a worker client to make it simple to implement a
+new protocol.  The StatsGatherer receives, aggregates, and prints status
+messages from the WorkerBees.
 '''
-
-# *FIX: Some bug exists which leads to the same span being inserted multiple times in http.
-# It probably has to do with the interplay between message semantics.
 
 import optparse
 import os
@@ -55,15 +54,6 @@ from apiary.tools.childprocess import ChildProcess
 from apiary.tools.transport import Transport, ConnectionError
 from apiary.tools.debug import debug, traced_func, traced_method
 
-# We use an amqp virtual host called "/apiary".
-# A virtual host holds a cluster of exchanges, queues, and bindings.
-# We use a virtual host for permissions purposes (user apiary has access to everything in /apiary)
-# Exchanges are routers with routing tables.  
-# Queues are where your messages end up.
-# Bindings are rules for routing tables.  We use a "direct" exchange.
-
-# credit: http://blogs.digitar.com/jjww/
-
 verbose = False
 
 class BeeKeeper(object):
@@ -72,6 +62,12 @@ class BeeKeeper(object):
     def __init__(self, options, arguments):
         self.options = options
         self.arguments = arguments
+
+        try:
+            self.protocol = options.protocols[options.protocol]
+        except KeyError:
+            sys.exit('invalid protocol: %s (valid protocols: %s)' %
+                     (options.protocol, " ".join(options.protocols)))
     
     def start(self):
         """Run the load test."""
@@ -81,7 +77,7 @@ class BeeKeeper(object):
         workers = []
         
         for i in xrange(self.options.workers):
-            worker = WorkerBee(self.options)
+            worker = self.protocol.WorkerBee(self.options)
             worker.start()
             workers.append(worker)
         
@@ -138,16 +134,8 @@ class StatsGatherer(ChildProcess):
         self._tally = {}
         self._tally_time = time.time() + 15.0
         self._worker_count = 0
-        self._table_dne_re = re.compile('''500 \(1146, "Table '.*' doesn't exist"\)''')
     
     def tally(self, msg):
-        # aggregate these error codes since we see a lot of them (1062/1064)
-        if "Duplicate entry" in msg:
-            msg = '501 (1062, "Duplicate entry for key")'
-        elif "You have an error in your SQL syntax" in msg:
-            msg = '501 (1064, "You have an error in your SQL syntax")'
-        elif self._table_dne_re.match(msg):
-            msg = '''501 (1146, "Table ___ doesn't exist")'''
         self._tally[msg] = self._tally.get(msg, 0) + 1
         if time.time() > self._tally_time:
             self.print_tally()
@@ -264,116 +252,71 @@ class WorkerBee(ChildProcess):
     def __init__(self, options):
         super(WorkerBee, self).__init__()
         
-        self._options = options
-        self._asap = options.asap
-        self._verbose = options.verbose >= 1
-        self._debug = options.debug
-        self._no_mysql = options.no_mysql
-        self._connect_options = {}
-        self._connect_options['host'] = options.mysql_host
-        self._connect_options['port'] = options.mysql_port
-        self._connect_options['user'] = options.mysql_user
-        self._connect_options['passwd'] = options.mysql_passwd
-        self._connect_options['db'] = options.mysql_db
-        self._connect_options['read_timeout'] = options.mysql_read_timeout
-        self._start_time = time.time()
-        self._time_scale = 1.0 / options.speedup
-
-        if options.mysql_host.startswith('@'):
-            self.dynamic_host = True
-            self.dynamic_host_file = options.mysql_host[1:]
-        else:
-            self.dynamic_host = False
+        self.options = options
+        self.dry_run = options.dry_run
+        self.asap = options.asap
+        self.verbose = options.verbose >= 1
+        self.debug = options.debug
+        self.time_scale = 1.0 / options.speedup
     
     def status(self, status, body=None):
         self._transport.send('worker-status', cPickle.dumps(Message(status, body)))
     
+    def error(self, body):
+        self.status(Message.JOB_ERROR, body)
+
     def process_job(self, msg):
         self._process_job(msg)
         msg.channel.basic_ack(msg.delivery_tag)
 
-    def _process_job(self, msg):
         message = cPickle.loads(msg.body)
         
         if message.type == Message.STOP_WORKER:
             msg.channel.basic_cancel('worker-job')
         elif message.type == Message.JOB:
             # Jobs look like this:
-            # (job_id, ((time, SQL), (time, SQL), ...))
+            # (job_id, ((time, request), (time, request), ...))
             
             job_id, tasks = message.body
             
             self.status(Message.JOB_STARTED)
             
-            if self._no_mysql:
+            if self.dry_run:
                 self.status(Message.JOB_COMPLETED)
+                msg.channel.basic_ack(msg.delivery_tag)
                 return
 
-            if self.dynamic_host:
-                with open(self.dynamic_host_file) as f:
-                    self._connect_options['host'] = f.read().strip()
+            self.start_job(job_id)
 
-            connection = None
-            
-            for timestamp, query in tasks:
+            for timestamp, request in tasks:
                 target_time = timestamp * self._time_scale + self._start_time
                 offset = target_time - time.time()
                 
                 # TODO: warn if falling behind?
                 
                 if offset > 0:
-                    #if self._verbose:
                     debug('sleeping %0.4f seconds' % offset)
                     if offset > 120 and self._verbose:
                         print "long wait of %ds for job %s" % (offset, job_id)
                     time.sleep(offset)
 
-                if connection is None:
-                    try:
-                        try:
-                            connection = MySQLdb.connect(**self._connect_options)
-                        except TypeError, e:
-                            # Using a python-mysqldb version that does not have
-                            # read_timeout patch from
-                            # http://sourceforge.net/p/mysql-python/patches/75/
-                            del self._connect_options['read_timeout']
-                            connection = MySQLdb.connect(**self._connect_options)
-                    except Exception, e:
-                        self.status(Message.JOB_ERROR, str(e))
-                        return
-                
-                query = query.strip()
-                if query and query != "Quit": # "Quit" is for compatibility with a bug in genjobs.py.  TODO: remove this
-                    try:
-                        cursor = connection.cursor()
-                        rows = cursor.execute(query)
-                        if rows:
-                            cursor.fetchall()
-                        cursor.close()
-                    except Exception, e: # TODO: more restrictive error catching?
-                        self.status(Message.JOB_ERROR, "%s" % e)
-                        
-                        try:
-                            cursor.close()
-                            connection.close()
-                        except:
-                            pass
-                        
-                        return
-            
-            try:
-                # Sometimes pt-query-digest neglects to mention the commit.
-                cursor.execute('COMMIT;')
-            except:
-                pass
-            
-            try:
-                connection.close()
-            except:
-                pass
-            
-            self.status(Message.JOB_COMPLETED)
+                error = not self.send_request(request)
+                if error:
+                    break
+
+            self.finish_job(job_id)
+
+            if not error:
+                self.status(Message.JOB_COMPLETED)
+
+        msg.channel.basic_ack(msg.delivery_tag)
     
+    def init_job(self, job_id):
+        raise NotImplementedError('protocol plugin must implement init_job()')
+
+    def send_request(self, request):
+        raise NotImplementedError('protocol plugin must implement send_request()')
+
     def run_child_process(self):
         if not self._debug:
             warnings.filterwarnings('ignore', category=MySQLdb.Warning)
@@ -426,6 +369,8 @@ def add_options(parser):
     parser.add_option('-v', '--verbose',
                         default=0, action='count',
                         help='increase output (0~2 times')
+    parser.add_option('-p', '--protocol', default='mysql',
+                      help='''Protocol plugin to use (default: mysql).''')
     parser.add_option('--profile', default=False, action='store_true', 
                       help='Print profiling data.  This will impact performance.')
     parser.add_option('--debug', default=False, action='store_true', dest='debug',
@@ -447,6 +392,8 @@ def add_options(parser):
                       help='''How many seconds ahead the QueenBee may get in sending
                            jobs to the queue.  Only change this if RabbitMQ runs out
                            of memory.''')
+    parser.add_option('-n', '--dry-run', default=False, action='store_true',
+                      help='''Don't actually send any requests.''')
     
     # Option groups:
     g = optparse.OptionGroup(parser, 'AMQP options')
@@ -465,27 +412,4 @@ def add_options(parser):
     g.add_option('--amqp-ssl',
                       action='store_true', default=False,
                       help='Enable SSL (default: not enabled)')
-    parser.add_option_group(g)
-
-    g = optparse.OptionGroup(parser, 'MySQL options')
-    g.add_option('--no-mysql', default=False, dest='no_mysql', action='store_true',
-                      help="Don't make mysql connections.  Return '200 OK' instead.")
-    g.add_option('--mysql-host',
-                      default="localhost", metavar='HOST',
-                      help='MySQL server to connect to (default: %default)')
-    g.add_option('--mysql-port',
-                      default=3306, type='int', metavar='PORT',
-                      help='MySQL port to connect on (default: %default)')
-    g.add_option('--mysql-user',
-                      default='guest', metavar='USER',
-                      help='MySQL user to connect as (default: %default)')
-    g.add_option('--mysql-passwd',
-                      default='', metavar='PW',
-                      help='MySQL password to connect with (default: %default)')
-    g.add_option('--mysql-db',
-                      default='test', metavar='DB',
-                      help='MySQL database to connect to (default: %default)')
-    g.add_option('--mysql-read-timeout',
-                      default=10, type='int', metavar='SECONDS',
-                      help='MySQL client read timeout (default: 10)')
     parser.add_option_group(g)

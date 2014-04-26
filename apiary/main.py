@@ -35,6 +35,8 @@ import os
 import multiprocessing
 import signal
 import time
+import pkgutil
+import importlib
 
 import apiary
 import apiary.tools.debug
@@ -64,10 +66,27 @@ def main(args=sys.argv[1:]):
         stats.sort()
         stats.pprint(top=10, file=sys.stderr, climit=5)
 
+def get_protocol_modules():
+    path = os.path.join(os.path.dirname(__file__), 'protocols')
+
+    modules = {}
+
+    for loader, name, is_package in pkgutil.iter_modules([path]):
+        if not is_package:
+            modules['name'] = importlib.import_module('protocols.%s' % name)
+
+    return modules
     
 def parse_args(args = []):
     parser = build_option_parser()
+
+    modules = get_protocol_modules()
+    for mod in modules.values():
+        if hasattr(mod, 'add_options'):
+            mod.add_options(parser)
+
     options, args = parser.parse_args(args)
+    options.protocols = modules
     
     return options, args
     
