@@ -12,12 +12,13 @@ import socket
 import sys
 import apiary
 
+
 class CountDBWorkerBee(apiary.WorkerBee):
     """A WorkerBee that sends requests to CountDB"""
-    
+
     def __init__(self, options):
         super(CountDBWorkerBee, self).__init__()
-        
+
         self.options = options
         self.connection = None
 
@@ -37,7 +38,7 @@ class CountDBWorkerBee(apiary.WorkerBee):
                 self.connection.sendall("json %s\0" % request)
                 self.connection.recv(self.options.countdb_recv_size)
                 return True
-            except Exception, e: # TODO: more restrictive error catching?
+            except Exception, e:  # TODO: more restrictive error catching?
                 self.error("%s" % e)
 
         return False

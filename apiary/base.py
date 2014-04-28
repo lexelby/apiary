@@ -1,18 +1,18 @@
 #
 # $LicenseInfo:firstyear=2010&license=mit$
-# 
+#
 # Copyright (c) 2010, Linden Research, Inc.
-# 
+#
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
 # in the Software without restriction, including without limitation the rights
 # to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 # copies of the Software, and to permit persons to whom the Software is
 # furnished to do so, subject to the following conditions:
-# 
+#
 # The above copyright notice and this permission notice shall be included in
 # all copies or substantial portions of the Software.
-# 
+#
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 # IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 # FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -55,9 +55,10 @@ from apiary.tools.debug import debug, traced_func, traced_method
 
 verbose = False
 
+
 class BeeKeeper(object):
     """Manages the hive, including QueenBee, WorkerBees, and StatsGatherer."""
-    
+
     def __init__(self, options, arguments):
         self.options = options
         self.arguments = arguments
@@ -67,79 +68,79 @@ class BeeKeeper(object):
         except KeyError:
             sys.exit('invalid protocol: %s (valid protocols: %s)' %
                      (options.protocol, " ".join(options.protocols)))
-    
+
     def start(self):
         """Run the load test."""
-        
+
         start_time = time.time()
-        
+
         workers = []
-        
+
         for i in xrange(self.options.workers):
             worker = self.protocol.WorkerBee(self.options)
             worker.start()
             workers.append(worker)
-        
+
         # TODO: consider waiting until workers are ready
-        
+
         stats_gatherer = StatsGatherer(self.options)
         stats_gatherer.start()
-        
+
         queen = QueenBee(self.options, self.arguments)
         queen.start()
-        
+
         # Now wait while the queen does its thing.
         try:
             queen.join()
         except KeyboardInterrupt:
             print "Interrupted, shutting down..."
             queen.terminate()
-        
+
         print "Waiting for workers to complete jobs and terminate (may take up to %d seconds)..." % self.options.max_ahead
-        
+
         try:
             # All jobs have been sent to rabbitMQ.  Now tell workers to stop.
             transport = Transport(self.options)
             transport.connect()
             transport.queue('worker-job', clean=False)
-            
+
             for worker in workers:
                 transport.send('worker-job', cPickle.dumps(Message(Message.STOP_WORKER)))
-            
-            # Now wait for the workers to get the message.  This may take a few 
+
+            # Now wait for the workers to get the message.  This may take a few
             # minutes as the QueenBee likes to stay ahead by a bit.
-            
+
             for worker in workers:
                 worker.join()
-            
+
             # Tell the Stats Gatherer that it's done.
             transport.queue('worker-status', clean=False)
             transport.send('worker-status', cPickle.dumps(Message(Message.STOP_STATS_GATHERER)))
-            
+
             # Wait for it to finish.
             stats_gatherer.join()
-            
+
             print "Completed %d jobs in %0.2f seconds." % (queen.jobs_sent.value, time.time() - start_time)
         except KeyboardInterrupt:
             print "Interrupted before shutdown process completed."
-    
+
+
 class StatsGatherer(ChildProcess):
 
     def __init__(self, options):
         super(StatsGatherer, self).__init__()
-        
+
         self._options = options
         self._verbose = options.verbose
         self._tally = {}
         self._tally_time = time.time() + 15.0
         self._worker_count = 0
-    
+
     def tally(self, msg):
         self._tally[msg] = self._tally.get(msg, 0) + 1
         if time.time() > self._tally_time:
             self.print_tally()
 
-    
     def print_tally(self):
         keys = self._tally.keys()
         keys.sort()
@@ -148,8 +149,8 @@ class StatsGatherer(ChildProcess):
         print "------------   -------------------------------------------"
         for k in keys:
             print ("%12d - %s" % (self._tally[k], k))
-        self._tally_time = time.time() + 15.0    
-    
+        self._tally_time = time.time() + 15.0
+
     @traced_method
     def worker_status(self, msg):
         debug("received worker status: %s" % msg.body)
@@ -177,7 +178,7 @@ class StatsGatherer(ChildProcess):
             self.tally("500 %s" % message.body)
         else:
             print >> sys.stderr, "Received unknown worker status: %s" % message
-    
+
     def run_child_process(self):
         t = Transport(self._options)
         t.connect()
@@ -188,11 +189,10 @@ class StatsGatherer(ChildProcess):
         t.wait()
         t.close()
 
-        
 
 class QueenBee(ChildProcess):
     """A QueenBee process that distributes sequences of events"""
-    
+
     def __init__(self, options, arguments):
         super(QueenBee, self).__init__()
 
@@ -202,14 +202,14 @@ class QueenBee(ChildProcess):
         self._time_scale = 1.0 / options.speedup
         self._last_warning = 0
         self.jobs_sent = Value('L', 0)
-    
+
     def run_child_process(self):
         transport = Transport(self._options)
         transport.connect()
         transport.queue('worker-job', clean=True)
-        
+
         start_time = time.time()
-        
+
         sequence_file = open(self._sequence_file, 'rb')
 
         job_num = 0
@@ -218,49 +218,50 @@ class QueenBee(ChildProcess):
             try:
                 job = cPickle.load(sequence_file)
                 job_num += 1
-                
+
                 # Jobs look like this:
                 # (job_id, ((time, SQL), (time, SQL), ...))
-                
-                # The job is ready to shove onto the wire as is.  However, 
-                # let's check to make sure we're not falling behind, and 
+
+                # The job is ready to shove onto the wire as is.  However,
+                # let's check to make sure we're not falling behind, and
                 # throttle sending so as not to overfill the queue.
-                
+
                 if not self._options.asap and len(job[1]) > 0:
                     base_time = job[1][0][0]
                     offset = base_time * self._time_scale - (time.time() - start_time)
-                    
+
                     if offset > self._options.max_ahead:
                         time.sleep(offset - self._options.max_ahead)
                     elif offset < -10.0:
                         if time.time() - self._last_warning > 60:
                             print "WARNING: Queenbee is %0.2f seconds behind." % (-offset)
                             self._last_warning = time.time()
-                
+
                 message = Message(Message.JOB, job)
                 message = cPickle.dumps(message)
                 transport.send('worker-job', message)
             except EOFError:
                 break
-        
+
         self.jobs_sent.value = job_num
+
 
 class WorkerBee(ChildProcess):
     """A WorkerBee that processes a sequences of events"""
-    
+
     def __init__(self, options):
         super(WorkerBee, self).__init__()
-        
+
         self.options = options
         self.dry_run = options.dry_run
         self.asap = options.asap
         self.verbose = options.verbose >= 1
         self.debug = options.debug
         self.time_scale = 1.0 / options.speedup
-    
+
     def status(self, status, body=None):
         self._transport.send('worker-status', cPickle.dumps(Message(status, body)))
-    
+
     def error(self, body):
         self.status(Message.JOB_ERROR, body)
 
@@ -269,17 +270,17 @@ class WorkerBee(ChildProcess):
         msg.channel.basic_ack(msg.delivery_tag)
 
         message = cPickle.loads(msg.body)
-        
+
         if message.type == Message.STOP_WORKER:
             msg.channel.basic_cancel('worker-job')
         elif message.type == Message.JOB:
             # Jobs look like this:
             # (job_id, ((time, request), (time, request), ...))
-            
+
             job_id, tasks = message.body
-            
+
             self.status(Message.JOB_STARTED)
-            
+
             if self.dry_run:
                 self.status(Message.JOB_COMPLETED)
                 msg.channel.basic_ack(msg.delivery_tag)
@@ -290,9 +291,9 @@ class WorkerBee(ChildProcess):
             for timestamp, request in tasks:
                 target_time = timestamp * self._time_scale + self._start_time
                 offset = target_time - time.time()
-                
+
                 # TODO: warn if falling behind?
-                
+
                 if offset > 0:
                     debug('sleeping %0.4f seconds' % offset)
                     if offset > 120 and self._verbose:
@@ -309,7 +310,7 @@ class WorkerBee(ChildProcess):
                 self.status(Message.JOB_COMPLETED)
 
         msg.channel.basic_ack(msg.delivery_tag)
-    
+
     def init_job(self, job_id):
         raise NotImplementedError('protocol plugin must implement init_job()')
 
@@ -319,7 +320,7 @@ class WorkerBee(ChildProcess):
     def run_child_process(self):
         if not self._debug:
             warnings.filterwarnings('ignore', category=MySQLdb.Warning)
-    
+
         self._transport = Transport(self._options)
         self._transport.connect()
         self._transport.set_prefetch(1)
@@ -352,14 +353,14 @@ class Message (object):
     JOB_COMPLETED = 6
     JOB_ERROR = 7
     JOB = 8
-    
+
     def __init__(self, type, body=None):
         self.type = type
         self.body = body
-    
+
     def __str__(self):
         return repr(self)
-        
+
     def __repr__(self):
         return "Message(%s, %s)" % (self.type, repr(self.body))
 
@@ -370,7 +371,7 @@ def add_options(parser):
                         help='increase output (0~2 times')
     parser.add_option('-p', '--protocol', default='mysql',
                       help='''Protocol plugin to use (default: mysql).''')
-    parser.add_option('--profile', default=False, action='store_true', 
+    parser.add_option('--profile', default=False, action='store_true',
                       help='Print profiling data.  This will impact performance.')
     parser.add_option('--debug', default=False, action='store_true', dest='debug',
                       help='Print debug messages.')
@@ -393,7 +394,7 @@ def add_options(parser):
                            of memory.''')
     parser.add_option('-n', '--dry-run', default=False, action='store_true',
                       help='''Don't actually send any requests.''')
-    
+
     # Option groups:
     g = optparse.OptionGroup(parser, 'AMQP options')
     g.add_option('--amqp-host',

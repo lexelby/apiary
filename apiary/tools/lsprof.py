@@ -1,6 +1,7 @@
 # taken from http://codespeak.net/svn/user/arigo/hack/misc/lsprof/lsprof.py
 
 import sys
+
 try:
     from _lsprof import Profiler, profiler_entry
 except ImportError, e:
@@ -9,6 +10,7 @@ except ImportError, e:
     sys.exit(1)
 
 __all__ = ['profile', 'Stats']
+
 
 def profile(f, *args, **kwds):
     """XXX docstring"""
@@ -84,7 +86,9 @@ class Stats(object):
                     if not isinstance(se.code, str):
                         e.calls[j] = type(se)((label(se.code),) + se[1:])
 
+
 _fn2mod = {}
+
 
 def label(code):
     if isinstance(code, str):
@@ -103,7 +107,7 @@ def label(code):
                 mname = _fn2mod[code.co_filename] = k
                 break
         else:
-            mname = _fn2mod[code.co_filename] = '<%s>'%code.co_filename
+            mname = _fn2mod[code.co_filename] = '<%s>' % code.co_filename
 
     return '%s:%d(%s)' % (mname, code.co_firstlineno, code.co_name)
 

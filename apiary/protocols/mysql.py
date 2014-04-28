@@ -1,18 +1,18 @@
 #
 # $LicenseInfo:firstyear=2010&license=mit$
-# 
+#
 # Copyright (c) 2010, Linden Research, Inc.
-# 
+#
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
 # in the Software without restriction, including without limitation the rights
 # to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 # copies of the Software, and to permit persons to whom the Software is
 # furnished to do so, subject to the following conditions:
-# 
+#
 # The above copyright notice and this permission notice shall be included in
 # all copies or substantial portions of the Software.
-# 
+#
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 # IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 # FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -39,10 +39,10 @@ import apiary
 
 class MySQLWorkerBee(apiary.WorkerBee):
     """A WorkerBee that sends transactions to MySQL"""
-    
+
     def __init__(self, options):
         super(MySQLWorkerBee, self).__init__()
-        
+
         self._connect_options = {}
         self._connect_options['host'] = options.mysql_host
         self._connect_options['port'] = options.mysql_port
@@ -59,7 +59,7 @@ class MySQLWorkerBee(apiary.WorkerBee):
             self.dynamic_host_file = options.mysql_host[1:]
         else:
             self.dynamic_host = False
-    
+
     def error(self, msg):
         # aggregate these error codes since we see a lot of them
         if "Duplicate entry" in msg:
@@ -70,7 +70,6 @@ class MySQLWorkerBee(apiary.WorkerBee):
             msg = '''(1146, "Table ___ doesn't exist")'''
 
         super(MySQLWorkerBee, self).error(msg)
-
 
     def start_job(self, job_id):
         try:
@@ -95,7 +94,7 @@ class MySQLWorkerBee(apiary.WorkerBee):
                 if rows:
                     cursor.fetchall()
                 return True
-            except Exception, e: # TODO: more restrictive error catching?
+            except Exception, e:  # TODO: more restrictive error catching?
                 self.error("%s" % e)
 
         return False
@@ -116,7 +115,9 @@ class MySQLWorkerBee(apiary.WorkerBee):
         self.connection = None
         self.cursor = None
 
+
 WorkerBee = MySQLWorkerBee
+
 
 def add_options(parser):
     g = optparse.OptionGroup(parser, 'MySQL options (--protocol mysql)')

@@ -1,18 +1,18 @@
 #
 # $LicenseInfo:firstyear=2010&license=mit$
-# 
+#
 # Copyright (c) 2010, Linden Research, Inc.
-# 
+#
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
 # in the Software without restriction, including without limitation the rights
 # to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 # copies of the Software, and to permit persons to whom the Software is
 # furnished to do so, subject to the following conditions:
-# 
+#
 # The above copyright notice and this permission notice shall be included in
 # all copies or substantial portions of the Software.
-# 
+#
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 # IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 # FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -34,15 +34,15 @@ from apiary.tools import mergetools
 from apiary.tools import timestamp
 
 __all__ = [
-        'Event',
-        'CoalescedEvent',
-        'Sequence',
-        'parse_stanza',
-        'EventReader',
-        'input_events',
-        'FollowSequences',
-        'CoalesceSequences'
-    ]
+    'Event',
+    'CoalescedEvent',
+    'Sequence',
+    'parse_stanza',
+    'EventReader',
+    'input_events',
+    'FollowSequences',
+    'CoalesceSequences'
+]
 
 headerRE = re.compile(r'^(?P<time>\d+\.\d+)\t(?P<id>[\d.:]+)\t?(?P<source>\S*)\t(?P<state>\w+)$')
 breakRE = re.compile(r'^\*{3,}$')
@@ -53,30 +53,32 @@ threadRE = re.compile(r'# Thread_id: (\d+)$')
 admin_commandRE = re.compile(r'^# administrator command: (\w+);$')
 query_log_commentRE = re.compile(r'^#')
 
+
 class EventFile(object):
     def __init__(self, name):
         if name == "-":
             self._file = sys.stdin
         else:
             self._file = open(name, 'r')
-            
+
         self._lines = []
-    
+
     def readline(self):
         if self._lines:
             return self._lines.pop()
         else:
             return self._file.readline()
-    
+
     def unreadline(self, line):
         self._lines.append(line)
+
 
 class Event(object):
     # state values
     Query = 'QueryStart'
     Response = 'QueryResponse'
     End = 'Quit'
-    
+
     #@traced_method
     def __init__(self, time, id, source, state, body):
         self.time = time
@@ -86,7 +88,7 @@ class Event(object):
         self.source = source
         self.state = state
         self.body = body
-    
+
     def __cmp__(self, other):
         c = cmp(self.time, other.time)
         if c == 0:
@@ -95,11 +97,11 @@ class Event(object):
             if self.state != "Quit" and other.state == "Quit":
                 return -1
         return c
-        
+
     def __str__(self):
-        return ("%s\t%s\t%s\t%s\n%s\n**************************************\n"
-            % (self.time, self.id, self.source, self.state, self.body))
-    
+        return ("%s\t%s\t%s\t%s\n%s\n**************************************\n" %
+                (self.time, self.id, self.source, self.state, self.body))
+
     def events(self):
         es = []
         for event in self.body.split("\n+++\n"):
@@ -112,9 +114,10 @@ class Event(object):
                 es.append(Event(time, self.id, self.source, status, body))
         return es
 
+
 class CoalescedEvent(Event):
     Sequence = 'Sequence'
-    
+
     def __init__(self, shelf_life=None, max_life=None):
         self.time = None
         self.id = None
@@ -131,7 +134,7 @@ class CoalescedEvent(Event):
         self.max_life = None
         if max_life:
             self.max_life = timestamp.TimeStamp(max_life)
-    
+
     def add(self, event):
         if self.time is None:
             self.time = event.time
@@ -146,9 +149,9 @@ class CoalescedEvent(Event):
             self.body += "%s:Quit\n+++\n" % (event.time)
             self.ended = True
         elif event.state == Event.Query:
-            self.body += "%s:%s\n+++\n" % (event.time, event.body) 
+            self.body += "%s:%s\n+++\n" % (event.time, event.body)
         # Ignore Event.QueryResponse, because we only care about queries sent.
-    
+
     def endIfNeeded(self):
         if not self.ended:
             self.add(Event(self.lasttime, self.id, self.source,
@@ -157,12 +160,12 @@ class CoalescedEvent(Event):
 
 #@traced_func
 def parse_stanza(input):
-    
+
     # This function is a bit gnarly because it can handle either the output of
     # mk-query-digest or the output of mysql_watcher/mysql_logger.
     #
     # mk-query-digest parsing code borrowed from Dante Linden.
-    
+
     seconds = 0
     id = ''
     source = ''
@@ -175,17 +178,17 @@ def parse_stanza(input):
         line = input.readline()
         if line == '':  # empty string means EOF
             return None
-        if commentRE.match(line): # catch comments before the headers
-            line = input.readline() # Skip the line
+        if commentRE.match(line):  # catch comments before the headers
+            line = input.readline()  # Skip the line
         # parse the header in case it's a seq log
         match = headerRE.match(line)
-    
+
     if match:
         seconds = match.group('time')
         id = match.group('id')
         source = match.group('source') or ''
         state = match.group('state')
-        
+
         line = input.readline()
 
     # if processing a mk-query-digest query log, extract info from comments
@@ -202,7 +205,7 @@ def parse_stanza(input):
 
             timestamp = timeRE.match(line).groups()[0]
             # convert timestamp into seconds since epoch:
-            # strip off subseconds, convert remainder to seconds, 
+            # strip off subseconds, convert remainder to seconds,
             # append subseconds
             parts = timestamp.split('.')
             if len(parts) == 2:
@@ -219,17 +222,16 @@ def parse_stanza(input):
             admin_command = admin_commandRE.match(line).groups()[0]
             if admin_command == "Quit":
                 state = Event.End
-    
+
         line = input.readline()
         if line == '':
             return None
 
-        
-    # we should be to the body of the stanza now 
+    # we should be to the body of the stanza now
     while True:
         while commentRE.match(line):
-            line = input.readline() # Skip the line
-        if line == '': # EOF
+            line = input.readline()  # Skip the line
+        if line == '':  # EOF
             break
         if breakRE.match(line):
             break
@@ -249,33 +251,34 @@ def parse_stanza(input):
         input.unreadline(line)
     #print "seconds=%s, id=%s, body=%s" % (seconds, id, body)
     return Event(float(seconds), id, source, state, body)
-    
+
+
 class Sequence(object):
     def __init__(self):
         self._count = 0
         self._time_start = None
         self._last_event = None
-    
+
     def note(self, event):
         self._count += 1
         if self._time_start is None:
             self._time_start = event.time
         self._last_event = event
-    
+
     def count(self):
         return self._count
-    
+
     def time(self):
         return self._last_event.time - self._time_start
-    
+
     def timeto(self, event):
         if self._last_event is None:
             return None
         return event.time - self._last_event.time
-        
+
     def ended(self):
         return self._last_event.state == Event.End
-        
+
     def generateEnd(self, t=None):
         e = self._last_event
         if t is None:
@@ -286,7 +289,7 @@ class Sequence(object):
 class RawEventReader(object):
     def __init__(self, input):
         self._input = input
-    
+
     def __iter__(self):
         while True:
             s = parse_stanza(self._input)
@@ -294,10 +297,11 @@ class RawEventReader(object):
                 return
             yield s
 
+
 class EventReader(object):
     def __init__(self, input):
         self._input = input
-    
+
     def __iter__(self):
         while True:
             s = parse_stanza(self._input)
@@ -308,7 +312,8 @@ class EventReader(object):
                     yield t
             else:
                 yield s
-                
+
+
 #@traced_func
 def input_events(specs):
     if len(specs) == 0:
@@ -316,41 +321,43 @@ def input_events(specs):
     evs = [EventReader(EventFile(spec)) for spec in specs]
     return mergetools.imerge(*evs)
 
+
 def split_events(specs, dest_prefix, num_splits):
     if len(specs) == 0:
         specs = ['-']
 
     dests = [open(dest_prefix + str(n), 'w') for n in xrange(num_splits)]
-    
+
     evs = [EventReader(EventFile(spec)) for spec in specs]
     merged = mergetools.imerge(*evs)
-    
+
     start_time = time.time()
-    
+
     for num, event in enumerate(merged):
         if num % 10000 == 0:
             elapsed = time.time() - start_time
             print "split %d events in %s seconds (%.2f events/sec)..." % (num, elapsed, float(num) / float(elapsed))
-        
+
         dests[num % num_splits].write(str(event))
+
 
 def pickle_events(specs, dest):
     if len(specs) == 0:
         specs = ['-']
-    
+
     if not isinstance(dest, file):
         dest = open(dest, 'w')
-    
+
     evs = [EventReader(EventFile(spec)) for spec in specs]
     merged = mergetools.imerge(*evs)
-    
+
     start_time = time.time()
-    
+
     for num, event in enumerate(merged):
         if num % 10000 == 0:
             elapsed = time.time() - start_time
             print "pickled %d events in %s seconds (%.2f events/sec)..." % (num, elapsed, float(num) / float(elapsed))
-        
+
         if event.state == CoalescedEvent.Sequence:
             for subevent in event.events():
                 cPickle.dump(subevent, file=dest)
@@ -361,7 +368,7 @@ def pickle_events(specs, dest):
 def input_pickled_events(specs):
     for spec in specs:
         sequence_file = open(spec)
-        
+
         while True:
             try:
                 event = cPickle.load(sequence_file)
@@ -372,11 +379,12 @@ def input_pickled_events(specs):
                     yield event
             except EOFError:
                 break
-        
+
+
 class FollowSequences(object):
     def replay(self, events):
-        connections = { }
-        lastt = None;
+        connections = {}
+        lastt = None
         for e in events:
             id = e.id
             lastt = e.time
@@ -392,11 +400,11 @@ class FollowSequences(object):
                 del connections[id]
             if False:
                 expired = []
-                for (id,s) in connections.iteritems():
+                for (id, s) in connections.iteritems():
                     w = s.timeto(e)
                     if w and float(w) > 60.0:
-                        expired.append((id,s))
-                for (id,s) in expired:
+                        expired.append((id, s))
+                for (id, s) in expired:
                     f = s.generateEnd(e.time)
                     self.forcedEnd(s, f)
                     self.removingSequence(s, f)
@@ -405,33 +413,36 @@ class FollowSequences(object):
             f = s.generateEnd(lastt)
             self.forcedEnd(s, f)
             self.removingSequence(s, f)
-            
+
     def addingSequence(self, s, e):
         pass
-    
+
     def notingEvent(self, s, e):
         pass
-    
+
     def forcedEnd(self, s, e):
         pass
-    
+
     def removingSequence(self, s, e):
         pass
 
 
 class CoalesceSequences(object):
     def __init__(self):
-        self.connections = { }
-        self.bytime = [ ]
+        self.connections = {}
+        self.bytime = []
         self.starttime = None
         self.lasttime = None
-        
+
     def heartbeat(self, n):
         if self.bytime:
             sys.stderr.write("front of the queue = %s\n" % self.bytime[0].id)
-        sys.stderr.write("%s: %d events... (%d connections, %d waiting)\n"
-            % (str(self.lasttime - self.starttime), n, len(self.connections), len(self.bytime)))
-            
+        sys.stderr.write("%s: %d events... (%d connections, %d waiting)\n" %
+                         (str(self.lasttime - self.starttime),
+                          n,
+                          len(self.connections),
+                          len(self.bytime)))
+
         # The stuff below summarizes the queue in this format:
         # : <item> : <item> : <item>
         # Where <item> is one of:
@@ -440,7 +451,7 @@ class CoalesceSequences(object):
         #
         # Up to the first 5 connections found will be printed, along with the gaps of ended connections
         # between them.
-        
+
         n = 0
         i = 0
         l = len(self.bytime)
@@ -470,19 +481,19 @@ class CoalesceSequences(object):
         c.endIfNeeded()
         del self.connections[c.id]
         return True
-        
+
     def flush_completed(self):
         """Print query sequences that have completed.
-        
+
         Query sequences are always printed in order of the time the
         sequence started.  Sequence endings are sometimes not present
         in the event stream, in which case we must wait until the
         sequence times out before printing it out.  No sequences after
         the "stuck" sequence will be printed until it times out.
         """
-        
+
         bytime = self.bytime
-        
+
         while bytime:
             c = bytime[0]
             if not c.ended:
@@ -490,14 +501,14 @@ class CoalesceSequences(object):
                     return
             heapq.heappop(bytime)
             self.fullSequence(c)
-            
+
     def flush_all(self):
         """Flush all sequences.
-        
-        Sequences are flushed even if no end event has been seen and 
+
+        Sequences are flushed even if no end event has been seen and
         they have not timed out yet.
         """
-        
+
         while self.bytime:
             c = heapq.heappop(self.bytime)
             c.endIfNeeded()
@@ -505,21 +516,21 @@ class CoalesceSequences(object):
 
     def replay(self, events):
         """Correlate an interleaved query stream into sequences of queries."""
-        
+
         # n = number of events seen
         n = 0
-        
+
         # s = number of sequences seen
         s = 0
-        
+
         # self.connections tracks open connections for which we have not seen an end event.
         connections = self.connections
-        
-        # bytime contains all queries that have not yet been printed as 
-        # sequences.  It is a min-heap ordered by time, so that the 
+
+        # bytime contains all queries that have not yet been printed as
+        # sequences.  It is a min-heap ordered by time, so that the
         # earliest event is always first in the list.
         bytime = self.bytime
-        
+
         for e in events:
             id = e.id
             self.lasttime = e.time
@@ -530,8 +541,8 @@ class CoalesceSequences(object):
             if n % 10000 == 0:
                 # Print stats every 10000 events.
                 self.heartbeat(n)
-            
-            # If this connection is already in the lsit of open connections, 
+
+            # If this connection is already in the lsit of open connections,
             # see if it's stale or too old.  Sometimes the query stream doesn't
             # contain the End event for a given connection, so we need to time
             # it out.
@@ -550,7 +561,7 @@ class CoalesceSequences(object):
             else:
                 c.add(e)
 
-            # Check if the connection is closing.  If so, remove it from 
+            # Check if the connection is closing.  If so, remove it from
             # self.connections, but don't print it out yet.  Events must
             # be printed in order.
             if e.state == Event.End:
@@ -561,9 +572,8 @@ class CoalesceSequences(object):
         for d in connections.itervalues():
             d.endIfNeeded()
         self.flush_all()
-        
+
         print >> sys.stderr, "%d events processed; %d sequences produced" % (n, s)
-                    
+
     def fullSequence(self, e):
         raise NotImplemented("fullSequence() should be implemented by a child class")
-
