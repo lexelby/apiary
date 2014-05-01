@@ -95,9 +95,10 @@ class MySQLWorkerBee(apiary.WorkerBee):
     def send_request(self, query):
         if self.connection and self.cursor:
             try:
-                rows = self.cursor.execute(query.strip())
-                if rows:
-                    self.cursor.fetchall()
+                if query:
+                    rows = self.cursor.execute(query.strip())
+                    if rows:
+                        self.cursor.fetchall()
                 return True
             except Exception, e:  # TODO: more restrictive error catching?
                 self.error("%s" % e)

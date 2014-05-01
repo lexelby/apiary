@@ -278,7 +278,7 @@ class WorkerBee(ChildProcess):
 
             self.status(Message.JOB_STARTED)
 
-            if self.dry_run:
+            if self.dry_run or not tasks:
                 self.status(Message.JOB_COMPLETED)
                 msg.channel.basic_ack(msg.delivery_tag)
                 return
