@@ -97,7 +97,7 @@ class MySQLWorkerBee(apiary.WorkerBee):
             try:
                 rows = self.cursor.execute(query.strip())
                 if rows:
-                    cursor.fetchall()
+                    self.cursor.fetchall()
                 return True
             except Exception, e:  # TODO: more restrictive error catching?
                 self.error("%s" % e)
