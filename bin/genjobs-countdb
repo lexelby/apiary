@@ -84,14 +84,19 @@ class Stream:
         self.num_packets = 0
         self.data = []
         self.last_timestamp = None
+        self.closed = False
 
     def append(self, current_timestamp, data):
         self.data.append((current_timestamp, data))
         self.num_packets += 1
         self.last_timestamp = current_timestamp
 
+    def close(self):
+        self.closed = True
+
     def done(self, current_timestamp):
-        return (current_timestamp - self.last_timestamp > STREAM_TIMEOUT or
+        return (self.closed or
+                current_timestamp - self.last_timestamp > STREAM_TIMEOUT or
                 self.num_packets >= MAX_PACKETS_PER_STREAM)
 
     def generate_job(self):
@@ -230,6 +235,7 @@ class Decoder:
             heapq.heappush(self.streams, stream)
 
         if is_close:
+            stream.close()
             del self.connections[con]
 
         self.flush(current_timestamp)
