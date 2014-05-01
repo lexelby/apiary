@@ -285,6 +285,8 @@ class WorkerBee(ChildProcess):
 
             self.start_job(job_id)
 
+            error = False
+
             for timestamp, request in tasks:
                 target_time = timestamp * self.time_scale + self.start_time
                 offset = target_time - time.time()
