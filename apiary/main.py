@@ -73,7 +73,7 @@ def get_protocol_modules():
 
     for loader, name, is_package in pkgutil.iter_modules([path]):
         if not is_package:
-            modules['name'] = importlib.import_module('protocols.%s' % name)
+            modules['name'] = importlib.import_module('apiary.protocols.%s' % name)
 
     return modules
 
