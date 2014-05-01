@@ -37,11 +37,11 @@ from impacket.ImpactDecoder import EthDecoder, LinuxSLLDecoder
 # simulation to break and reopen connections where, in reality, a long-lived
 # connection existed.  We have to do this to avoid running out of memory while
 # parsing.
-MAX_PACKETS_PER_STREAM = 1024
+MAX_PACKETS_PER_STREAM = 100
 
 # If we don't see any packets on a stream for this many seconds, assume it's
 # closed and we missed the FIN.
-STREAM_TIMEOUT = 300
+STREAM_TIMEOUT = 30
 
 base_timestamp = None
 
@@ -195,7 +195,7 @@ class Decoder:
 
         self.packets_seen += 1
         if self.packets_seen % 1000 == 0:
-            print "processed %d packets, timestamp: %f" % (self.packets_seen, current_timestamp)
+            self.print_stats(current_timestamp)
 
         # Use the ImpactDecoder to turn the rawpacket into a hierarchy
         # of ImpactPacket instances.
@@ -233,6 +233,12 @@ class Decoder:
             del self.connections[con]
 
         self.flush(current_timestamp)
+
+    def print_stats(self, current_timestamp):
+        print "processed %d packets, timestamp: %f" % (self.packets_seen, current_timestamp)
+
+        if self.streams:
+            print "head of queue -- age: %f #packets: %d" % (current_timestamp - self.streams[0].last_timestamp, self.streams[0].num_packets)
 
     def flush(self, now):
         while self.streams[0].done(now):
