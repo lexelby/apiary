@@ -17,7 +17,7 @@ class CountDBWorkerBee(apiary.WorkerBee):
     """A WorkerBee that sends requests to CountDB"""
 
     def __init__(self, options):
-        super(CountDBWorkerBee, self).__init__()
+        super(CountDBWorkerBee, self).__init__(options)
 
         self.options = options
         self.connection = None
