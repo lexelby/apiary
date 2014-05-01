@@ -238,7 +238,11 @@ class Decoder:
         print "processed %d packets, timestamp: %f" % (self.packets_seen, current_timestamp)
 
         if self.streams:
-            print "head of queue -- age: %f #packets: %d" % (current_timestamp - self.streams[0].last_timestamp, self.streams[0].num_packets)
+            print "queue %5d -- job %5d age: %f #packets: %d" % \
+                (len(self.streams),
+                 self.next_job_id,
+                 current_timestamp - self.streams[0].last_timestamp,
+                 self.streams[0].num_packets)
 
     def flush(self, now):
         while self.streams[0].done(now):
