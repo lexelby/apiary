@@ -317,7 +317,7 @@ class WorkerBee(ChildProcess):
         raise NotImplementedError('protocol plugin must implement send_request()')
 
     def run_child_process(self):
-        self._transport = Transport(self._options)
+        self._transport = Transport(self.options)
         self._transport.connect()
         self._transport.set_prefetch(1)
         self._transport.usequeue('worker-job')
