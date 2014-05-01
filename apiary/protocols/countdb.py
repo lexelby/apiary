@@ -11,7 +11,7 @@ import re
 import socket
 import sys
 import apiary
-
+import optparse
 
 class CountDBWorkerBee(apiary.WorkerBee):
     """A WorkerBee that sends requests to CountDB"""
