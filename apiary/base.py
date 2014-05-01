@@ -48,7 +48,6 @@ from multiprocessing import Value
 
 import amqplib.client_0_8 as amqp
 
-from apiary.tools import stattools
 from apiary.tools.childprocess import ChildProcess
 from apiary.tools.transport import Transport, ConnectionError
 from apiary.tools.debug import debug, traced_func, traced_method
