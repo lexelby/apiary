@@ -265,9 +265,6 @@ class WorkerBee(ChildProcess):
         self.status(Message.JOB_ERROR, body)
 
     def process_job(self, msg):
-        self._process_job(msg)
-        msg.channel.basic_ack(msg.delivery_tag)
-
         message = cPickle.loads(msg.body)
 
         if message.type == Message.STOP_WORKER:
