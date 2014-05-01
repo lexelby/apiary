@@ -257,6 +257,7 @@ class WorkerBee(ChildProcess):
         self.verbose = options.verbose >= 1
         self.debug = options.debug
         self.time_scale = 1.0 / options.speedup
+        self.start_time = time.time()
 
     def status(self, status, body=None):
         self._transport.send('worker-status', cPickle.dumps(Message(status, body)))
@@ -285,14 +286,14 @@ class WorkerBee(ChildProcess):
             self.start_job(job_id)
 
             for timestamp, request in tasks:
-                target_time = timestamp * self._time_scale + self._start_time
+                target_time = timestamp * self.time_scale + self.start_time
                 offset = target_time - time.time()
 
                 # TODO: warn if falling behind?
 
                 if offset > 0:
                     debug('sleeping %0.4f seconds' % offset)
-                    if offset > 120 and self._verbose:
+                    if offset > 120 and self.verbose:
                         print "long wait of %ds for job %s" % (offset, job_id)
                     time.sleep(offset)
 
