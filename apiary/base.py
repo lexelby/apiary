@@ -317,9 +317,6 @@ class WorkerBee(ChildProcess):
         raise NotImplementedError('protocol plugin must implement send_request()')
 
     def run_child_process(self):
-        if not self._debug:
-            warnings.filterwarnings('ignore', category=MySQLdb.Warning)
-
         self._transport = Transport(self._options)
         self._transport.connect()
         self._transport.set_prefetch(1)

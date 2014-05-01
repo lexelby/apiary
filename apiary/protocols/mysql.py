@@ -73,6 +73,9 @@ class MySQLWorkerBee(apiary.WorkerBee):
         super(MySQLWorkerBee, self).error(msg)
 
     def start_job(self, job_id):
+        if not self.debug:
+            warnings.filterwarnings('ignore', category=MySQLdb.Warning)
+
         try:
             try:
                 self.connection = MySQLdb.connect(**self._connect_options)
