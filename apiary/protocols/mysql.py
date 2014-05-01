@@ -36,6 +36,7 @@ import cPickle
 import MySQLdb
 import apiary
 import optparse
+import warnings
 
 
 class MySQLWorkerBee(apiary.WorkerBee):
