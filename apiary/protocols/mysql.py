@@ -53,7 +53,6 @@ class MySQLWorkerBee(apiary.WorkerBee):
         self._connect_options['db'] = options.mysql_db
         self._connect_options['read_timeout'] = options.mysql_read_timeout
         self.connection = None
-        self.cursor = None
         self._table_dne_re = re.compile('''\(1146, "Table '.*' doesn't exist"\)''')
 
         if options.mysql_host.startswith('@'):
@@ -86,30 +85,38 @@ class MySQLWorkerBee(apiary.WorkerBee):
                 # http://sourceforge.net/p/mysql-python/patches/75/
                 del self._connect_options['read_timeout']
                 self.connection = MySQLdb.connect(**self._connect_options)
-
-            self.cursor = self.connection.cursor()
         except Exception, e:
             self.error(str(e))
             self.connection = None
 
     def send_request(self, query):
-        if self.connection and self.cursor:
+        if self.connection and query:
             try:
-                if query:
-                    rows = self.cursor.execute(query.strip())
-                    if rows:
-                        self.cursor.fetchall()
+                cursor = self.connection.cursor()
+                rows = cursor.execute(query.strip())
+                if rows:
+                    cursor.fetchall()
+                cursor.close()
                 return True
             except Exception, e:  # TODO: more restrictive error catching?
                 self.error("%s" % e)
 
-        return False
+                try:
+                    cursor.close()
+                    self.connection.close()
+                    self.connection = None
+                except:
+                    pass
+
+                return False
 
     def finish_job(self, job_id):
-        if self.connection and self.cursor:
+        if self.connection:
             try:
                 # Sometimes pt-query-digest neglects to mention the commit.
-                self.cursor.execute('COMMIT;')
+                cursor = self.connection.cursor()
+                cursor.execute('COMMIT;')
+                cursor.close()
             except:
                 pass
 
@@ -119,7 +126,6 @@ class MySQLWorkerBee(apiary.WorkerBee):
                 pass
 
         self.connection = None
-        self.cursor = None
 
 
 WorkerBee = MySQLWorkerBee
