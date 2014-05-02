@@ -16,8 +16,8 @@ import optparse
 class CountDBWorkerBee(apiary.WorkerBee):
     """A WorkerBee that sends requests to CountDB"""
 
-    def __init__(self, options):
-        super(CountDBWorkerBee, self).__init__(options)
+    def __init__(self, options, *args, **kwargs):
+        super(CountDBWorkerBee, self).__init__(options, *args, **kwargs)
 
         self.options = options
         self.connection = None

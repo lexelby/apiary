@@ -42,8 +42,8 @@ import warnings
 class MySQLWorkerBee(apiary.WorkerBee):
     """A WorkerBee that sends transactions to MySQL"""
 
-    def __init__(self, options):
-        super(MySQLWorkerBee, self).__init__(options)
+    def __init__(self, options, *args, **kwargs):
+        super(MySQLWorkerBee, self).__init__(options, *args, **kwargs)
 
         self._connect_options = {}
         self._connect_options['host'] = options.mysql_host

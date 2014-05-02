@@ -44,12 +44,12 @@ import cPickle
 import MySQLdb
 import time
 import warnings
+from threading import Thread
 from multiprocessing import Value
 
-import amqplib.client_0_8 as amqp
+import rabbitpy
 
 from apiary.tools.childprocess import ChildProcess
-from apiary.tools.transport import Transport, ConnectionError
 from apiary.tools.debug import debug, traced_func, traced_method
 
 verbose = False
@@ -76,7 +76,7 @@ class BeeKeeper(object):
         workers = []
 
         for i in xrange(self.options.workers):
-            worker = self.protocol.WorkerBee(self.options)
+            worker = WorkerBeeProcess(self.options, self.protocol)
             worker.start()
             workers.append(worker)
 
@@ -244,14 +244,16 @@ class QueenBee(ChildProcess):
 
         self.jobs_sent.value = job_num
 
+class WorkerBee(Thread):
+    """The thread that does the actual job processing"""
 
-class WorkerBee(ChildProcess):
-    """A WorkerBee that processes a sequences of events"""
+    EXCHANGE = 'b.direct'
 
-    def __init__(self, options):
+    def __init__(self, options, channel):
         super(WorkerBee, self).__init__()
 
         self.options = options
+        self.channel = channel
         self.dry_run = options.dry_run
         self.asap = options.asap
         self.verbose = options.verbose >= 1
@@ -260,16 +262,17 @@ class WorkerBee(ChildProcess):
         self.start_time = time.time()
 
     def status(self, status, body=None):
-        self._transport.send('worker-status', cPickle.dumps(Message(status, body)))
+        message = rabbitpy.Message(self.channel, cPickle.dumps(Message(status, body)))
+        message.publish(self.exchange, 'worker-job')
 
     def error(self, body):
         self.status(Message.JOB_ERROR, body)
 
-    def process_job(self, msg):
+    def process_message(self, msg):
         message = cPickle.loads(msg.body)
 
         if message.type == Message.STOP_WORKER:
-            msg.channel.basic_cancel('worker-job')
+            return True
         elif message.type == Message.JOB:
             # Jobs look like this:
             # (job_id, ((time, request), (time, request), ...))
@@ -280,7 +283,6 @@ class WorkerBee(ChildProcess):
 
             if self.dry_run or not tasks:
                 self.status(Message.JOB_COMPLETED)
-                msg.channel.basic_ack(msg.delivery_tag)
                 return
 
             self.start_job(job_id)
@@ -308,29 +310,63 @@ class WorkerBee(ChildProcess):
             if not error:
                 self.status(Message.JOB_COMPLETED)
 
-        msg.channel.basic_ack(msg.delivery_tag)
-
     def init_job(self, job_id):
-        raise NotImplementedError('protocol plugin must implement init_job()')
+        pass
 
     def send_request(self, request):
         raise NotImplementedError('protocol plugin must implement send_request()')
 
+    def finish_request(self, request):
+        pass
+
+    def run(self):
+        self.job_queue = rabbitpy.Queue(self.channel,
+                                   'worker-job',
+                                   durable=False,
+                                   auto_delete=False)
+        self.job_queue.declare()
+
+        self.exchange = rabbitpy.Exchange(self.channel, self.EXCHANGE)
+        self.exchange.declare()
+
+        self.job_queue.bind(exchange, 'worker-job')
+
+        for message in self.job_queue.consume_messages(prefetch=1):
+            done = self.process_message(message)
+            message.ack()
+
+            if done:
+                break
+
+class WorkerBeeProcess(ChildProcess):
+    """Manages the set of WorkerBee threads"""
+
+    def __init__(self, options, protocol):
+        super(WorkerBeeProcess, self).__init__()
+
+        self.options = options
+        self.protocol = protocol
+        self.threads = []
+
     def run_child_process(self):
-        self._transport = Transport(self.options)
-        self._transport.connect()
-        self._transport.set_prefetch(1)
-        self._transport.usequeue('worker-job')
-        self._transport.usequeue('worker-status')
-        self.status(Message.WORKER_NEW)
+        url = 'amqp%s://%s:%s@%s/%s' % \
+            ('s' if self.options.amqp_ssl else '',
+             self.options.amqp_userid,
+             self.options.amqp_password,
+             self.options.amqp_host,
+             self.options.amqp_vhost)
 
-        self._transport.consume('worker-job', 'worker-job', self.process_job, exclusive=False)
-        self._transport.wait()
-        self.status(Message.WORKER_HALTED)
-        debug("worker ended")
-        self._transport.close()
-        self._transport = None
+        with rabbitpy.Connection(url) as conn:
+            for i in xrange(self.options.threads):
+                thread = self.protocol.WorkerBee(self.options, conn.channel())
+                thread.setDaemon(True)
+                thread.start()
+                self.threads.append(thread)
 
+            for thread in threads:
+                thread.join()
+
+        print 'worker ended'
 
 def clean(options):
     transport = Transport(options)
@@ -377,6 +413,9 @@ def add_options(parser):
     parser.add_option('-w', '--workers', metavar='N',
                       default=100, type='int',
                       help='number of worker bee processes (default: 100)')
+    parser.add_option('-t', '--threads', metavar='N',
+                      default=1, type='int',
+                      help='number of threads per worker process (default: 1)')
     parser.add_option('--clean',
                       action='store_true', default=False,
                       help='clean up all queues')
