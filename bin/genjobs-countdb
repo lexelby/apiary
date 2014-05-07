@@ -45,7 +45,7 @@ STREAM_TIMEOUT = 30
 
 base_timestamp = None
 
-class Connection:
+class Connection(object):
     """This class can be used as a key in a dictionary to select a connection
     given a pair of peers. Two connections are considered the same if both
     peers are equal, despite the order in which they were passed to the
@@ -78,13 +78,17 @@ class Connection:
         return (hash(self.p1[0]) ^ hash(self.p1[1])
                 ^ hash(self.p2[0]) ^ hash(self.p2[1]))
 
-class Stream:
-    def __init__(self, conn):
+class Stream(object):
+    def __init__(self, conn, start_timestamp):
         self.conn = conn
         self.num_packets = 0
         self.data = []
+        self.start_timestamp = start_timestamp
         self.last_timestamp = None
         self.closed = False
+
+    def __cmp__(self, other):
+        return cmp(self.start_timestamp, other.start_timestamp)
 
     def append(self, current_timestamp, data):
         self.data.append((current_timestamp, data))
@@ -223,7 +227,7 @@ class Decoder:
                 return
 
             need_heap_push = True
-            stream = Stream(con)
+            stream = Stream(con, current_timestamp)
             self.connections[con] = stream
         else:
             stream = self.connections[con]
