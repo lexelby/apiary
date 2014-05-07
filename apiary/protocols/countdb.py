@@ -19,6 +19,8 @@ class CountDBWorkerBee(apiary.WorkerBee):
     def __init__(self, options, *args, **kwargs):
         super(CountDBWorkerBee, self).__init__(options, *args, **kwargs)
 
+        self.countdb_host = socket.gethostbyname(options.countdb_host)
+
         self.options = options
         self.connection = None
 
@@ -26,8 +28,8 @@ class CountDBWorkerBee(apiary.WorkerBee):
         socket.setdefaulttimeout(self.options.countdb_timeout)
 
         try:
-            self.connection = socket.create_connection(
-                (self.options.countdb_host, self.options.countdb_port))
+            self.connection = socket.socket()
+            self.connection.connect((self.countdb_host, self.options.countdb_port))
         except Exception, e:
             self.error(str(e))
             self.connection = None
