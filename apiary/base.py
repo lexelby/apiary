@@ -276,7 +276,7 @@ class WorkerBee(Thread):
         message.publish(self.exchange, 'worker-status')
 
     def error(self, body):
-        print 'error:', body
+        #print 'error:', body
         self.status(Message.JOB_ERROR, body)
 
     def process_message(self, msg):
