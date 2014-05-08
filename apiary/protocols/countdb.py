@@ -31,7 +31,7 @@ class CountDBWorkerBee(apiary.WorkerBee):
             self.connection = socket.socket()
             self.connection.connect((self.countdb_host, self.options.countdb_port))
         except Exception, e:
-            self.error(str(e))
+            self.error("error while connecting: %s" % e)
             self.connection = None
 
     def send_request(self, request):
@@ -41,7 +41,7 @@ class CountDBWorkerBee(apiary.WorkerBee):
                 self.connection.recv(self.options.countdb_recv_size)
                 return True
             except Exception, e:  # TODO: more restrictive error catching?
-                self.error("%s" % e)
+                self.error("error while sending request and reading response: %s" % e)
 
         return False
 
