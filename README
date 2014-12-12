@@ -69,7 +69,7 @@ the root user.  Adapt the commands below appropriately if that is not the case.
 
 5. Turn the tcpdump data into a query digest using percona-toolkit:
 
-    pt-query-digest --type=tcpdump --no-report --print /tmp/tcpdump.out > /tmp/apiary_query_digest.txt
+    pt-query-digest --type=tcpdump --no-report --output slowlog /tmp/tcpdump.out > /tmp/apiary_query_digest.txt
 
 Use mk-query-digest if you have maatkit instead of percona-toolkit.  They both work identically.
 
