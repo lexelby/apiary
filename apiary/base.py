@@ -156,6 +156,7 @@ class StatsGatherer(ChildProcess):
         print "------------   -------------------------------------------"
         for k in keys:
             print ("%12d - %s" % (self._tally[k], k))
+        sys.stdout.flush()
         self._tally_time = time.time() + 15.0
 
     @traced_method
