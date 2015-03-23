@@ -179,11 +179,14 @@ class StatsGatherer(ChildProcess):
             self.print_tally()
             msg.channel.basic_cancel('worker-status')
         elif message.type == Message.JOB_STARTED:
-            self.tally("100 Start Job")
+            self.tally("Started Job")
         elif message.type == Message.JOB_COMPLETED:
-            self.tally("200 OK")
+            self.tally("Finished Job")
         elif message.type == Message.JOB_ERROR:
-            self.tally("500 %s" % message.body)
+            self.tally("Job aborted due to error: " % message.body)
+        elif message.type == Message.JOB_TALLY:
+            # Tally a generic message.
+            self.tally(message.body)
         else:
             print >> sys.stderr, "Received unknown worker status: %s" % message
 
@@ -278,6 +281,9 @@ class WorkerBee(Thread):
     def error(self, body):
         #print 'error:', body
         self.status(Message.JOB_ERROR, body)
+
+    def tally(self, body):
+        self.status(Message.JOB_TALLY, body)
 
     def process_message(self, msg):
         message = cPickle.loads(msg.body)
@@ -416,6 +422,7 @@ class Message (object):
     JOB_STARTED = 5
     JOB_COMPLETED = 6
     JOB_ERROR = 7
+    JOB_TALLY = 9
     JOB = 8
 
     def __init__(self, type, body=None):
