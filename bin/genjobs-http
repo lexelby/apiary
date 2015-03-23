@@ -5,6 +5,7 @@ import os.path
 import re
 import cPickle
 import time
+from heapq import heappush, heappop
 from dateutil.parser import parse as parse_datetime
 from dateutil.tz import tzutc
 from datetime import datetime
@@ -132,16 +133,38 @@ def main():
     num_bogus = 0
     start_timestamp = unix_time(parse_datetime(files[0][0]))
 
-    for i, flow in enumerate(item[1] for item in files):
+    # This list is a heap that will be managed by the heapq module's heappush()
+    # and heappop().  The "start time" given in the report.xml is when the SYN
+    # was seen.  We have to process the entire flow to figure out when the first
+    # (valid) request started.
+    #
+    # Apiary requires that the jobs in the jobs file are strictly in order of
+    # when their first HTTP request starts.  It's possible for a flow to start
+    # with seconds of bogus data if the capture missed the start of a big file
+    # upload.  This means that just adding jobs in the order seen in the report
+    # will give us out-of-order jobs.
+    #
+    # A heap will let us efficiently sort items as we add them.  We can pop jobs
+    # off the list and write them to the file once their first timestamp is
+    # before the SYN of the flow we're currently processing.
+    jobs = []
+
+    for i, (timestamp, flow) in enumerate(files):
+        timestamp = unix_time(parse_datetime(timestamp)) - start_timestamp
+
         if i % 1000 == 0:
-            print "%d files processed, %0.2f%% complete (%d bogus files)" % (i, float(i) * 100 / num_files, num_bogus)
+            while jobs and jobs[0][0] < timestamp:
+                jobs_file.write(jobs[0][1])
+                heappop(jobs)
+
+            print "%d files processed, %d unflushed, %0.2f%% complete (%d bogus files)" % (i, len(jobs), float(i) * 100 / num_files, num_bogus)
 
         requests = parse_flow(flow, start_timestamp)
 
         if requests:
             num_requests += len(requests)
 
-            cPickle.dump((job_id, tuple(requests)), jobs_file)
+            heappush(jobs, (requests[0][0], cPickle.dumps((job_id, tuple(requests)))))
             job_id += 1
         else:
             num_bogus += 1
