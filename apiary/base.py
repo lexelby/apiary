@@ -210,6 +210,7 @@ class QueenBee(ChildProcess):
         self._options = options
         self._verbose = options.verbose
         self._sequence_file = arguments[0]
+        self._index_file = arguments[0] + ".index"
         self._time_scale = 1.0 / options.speedup
         self._last_warning = 0
         self.jobs_sent = Value('L', 0)
@@ -221,25 +222,20 @@ class QueenBee(ChildProcess):
 
         start_time = time.time() + self._options.startup_wait
 
-        sequence_file = open(self._sequence_file, 'rb')
+        index_file = open(self._index_file, 'rb')
 
         job_num = 0
 
         while True:
             try:
-                job = cPickle.load(sequence_file)
+                job_id, job_start_time, job_offset = cPickle.load(index_file)
                 job_num += 1
 
-                # Jobs look like this:
-                # (job_id, ((time, SQL), (time, SQL), ...))
+                # Check whether we're falling behind, and throttle sending so as
+                # not to overfill the queue.
 
-                # The job is ready to shove onto the wire as is.  However,
-                # let's check to make sure we're not falling behind, and
-                # throttle sending so as not to overfill the queue.
-
-                if not self._options.asap and len(job[1]) > 0:
-                    base_time = job[1][0][0]
-                    offset = base_time * self._time_scale - (time.time() - start_time)
+                if not self._options.asap:
+                    offset = job_start_time * self._time_scale - (time.time() - start_time)
 
                     if offset > self._options.max_ahead:
                         time.sleep(offset - self._options.max_ahead)
@@ -248,7 +244,7 @@ class QueenBee(ChildProcess):
                             print "WARNING: Queenbee is %0.2f seconds behind." % (-offset)
                             self._last_warning = time.time()
 
-                message = Message(Message.JOB, (start_time, job))
+                message = Message(Message.JOB, (start_time, job_id, self._sequence_file, job_offset))
                 message = cPickle.dumps(message)
                 transport.send('worker-job', message)
             except EOFError:
@@ -271,7 +267,6 @@ class WorkerBee(Thread):
         self.verbose = options.verbose >= 1
         self.debug = options.debug
         self.time_scale = 1.0 / options.speedup
-        self.start_time = None
 
     def status(self, status, body=None):
         #print 'status:', status, body
@@ -291,14 +286,21 @@ class WorkerBee(Thread):
         if message.type == Message.STOP_WORKER:
             return True
         elif message.type == Message.JOB:
-            # Jobs look like this:
-            # (job_id, ((time, request), (time, request), ...))
+            # Messages look like this:
+            # (start_time, job_id, job_file, offset)
+            start_time, job_id, job_file, offset = message.body
 
-            if self.start_time is None:
-                #print "worker starting first job"
-                self.start_time = time.time()
+            with open(job_file) as f:
+                f.seek(offset)
 
-            start_time, (job_id, tasks) = message.body
+                # Jobs look like this:
+                # (job_id, ((time, request), (time, request), ...))
+                read_job_id, tasks = cPickle.load(f)
+
+            if job_id != read_job_id:
+                print "ERROR: worker read the wrong job: expected %s, read %s" % (job_id, read_job_id)
+                return
+
             self.status(Message.JOB_STARTED)
 
             if self.dry_run or not tasks:
