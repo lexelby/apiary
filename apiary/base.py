@@ -183,7 +183,7 @@ class StatsGatherer(ChildProcess):
         elif message.type == Message.JOB_COMPLETED:
             self.tally("Finished Job")
         elif message.type == Message.JOB_ERROR:
-            self.tally("Job aborted due to error: " % message.body)
+            self.tally("Job aborted due to error: %s" % message.body)
         elif message.type == Message.JOB_TALLY:
             # Tally a generic message.
             self.tally(message.body)
