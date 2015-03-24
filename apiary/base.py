@@ -209,11 +209,16 @@ class QueenBee(ChildProcess):
 
         self._options = options
         self._verbose = options.verbose
-        self._sequence_file = arguments[0]
+        self._jobs_file = arguments[0]
         self._index_file = arguments[0] + ".index"
         self._time_scale = 1.0 / options.speedup
         self._last_warning = 0
         self.jobs_sent = Value('L', 0)
+
+        if os.path.exists(self._index_file):
+            self.use_index = True
+        else:
+            self.use_index = False
 
     def run_child_process(self):
         transport = Transport(self._options)
@@ -222,13 +227,22 @@ class QueenBee(ChildProcess):
 
         start_time = time.time() + self._options.startup_wait
 
-        index_file = open(self._index_file, 'rb')
+        if self.use_index:
+            jobs_file = open(self._index_file, 'rb')
+        else:
+            jobs_file = open(self._jobs_file, 'rb')
 
         job_num = 0
 
         while True:
             try:
-                job_id, job_start_time, job_offset = cPickle.load(index_file)
+                if self.use_index:
+                    job_id, job_start_time, job_offset = cPickle.load(jobs_file)
+                else:
+                    job_offset = jobs_file.tell()
+                    job_id, tasks = cPickle.load(jobs_file)
+                    job_start_time = tasks[0][0]
+
                 job_num += 1
 
                 # Check whether we're falling behind, and throttle sending so as
@@ -244,7 +258,7 @@ class QueenBee(ChildProcess):
                             print "WARNING: Queenbee is %0.2f seconds behind." % (-offset)
                             self._last_warning = time.time()
 
-                message = Message(Message.JOB, (start_time, job_id, self._sequence_file, job_offset))
+                message = Message(Message.JOB, (start_time, job_id, self._jobs_file, job_offset))
                 message = cPickle.dumps(message)
                 transport.send('worker-job', message)
             except EOFError:
