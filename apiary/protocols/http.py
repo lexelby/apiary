@@ -38,7 +38,7 @@ class HTTPWorkerBee(apiary.WorkerBee):
     def send_request(self, request):
         if self.connection:
             # tally request method
-            self.tally(request.split(" ", 1)[0])
+            #self.tally(request.split(" ", 1)[0])
 
             try:
                 self.connection.sendall(request)
