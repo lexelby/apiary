@@ -341,6 +341,7 @@ class WorkerBee(Thread):
 
                 if not started:
                     self.start_job(job_id)
+                    started = True
 
                 #print "sending request", request
                 error = not self.send_request(request)
