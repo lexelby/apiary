@@ -14,7 +14,7 @@ import os
 import apiary
 import optparse
 import time
-from httplib import HTTPResponse
+from httplib import HTTPResponse, IncompleteRead
 import threading
 
 
@@ -75,11 +75,19 @@ class HTTPWorkerBee(apiary.WorkerBee):
                     print >> self.stats_file, time.time() - start_time
 
                 return True
+            except IncompleteRead:
+                self.error("error while reading response: IncompleteRead (terminating job)")
+
+                if self.connection:
+                    self.connection.close()
+                    self.connection = None
+
             except Exception, e:  # TODO: more restrictive error catching?
                 self.error("error while sending request and reading response: %s" % e)
 
-                self.connection.close()
-                self.connection = None
+                if self.connection:
+                    self.connection.close()
+                    self.connection = None
 
         return False
 
