@@ -72,7 +72,7 @@ class HTTPWorkerBee(apiary.WorkerBee):
                     pass
 
                 if self.stats:
-                    print >> self.stats_file, time.time() - start_time
+                    print >> self.stats_file, start_time, time.time() - start_time
 
                 return True
             except IncompleteRead:
