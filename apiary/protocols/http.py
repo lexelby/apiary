@@ -10,9 +10,12 @@ This module implements a simple HTTP client with keepalive but not pipelining.
 import re
 import socket
 import sys
+import os
 import apiary
 import optparse
+import time
 from httplib import HTTPResponse
+import threading
 
 
 class HTTPWorkerBee(apiary.WorkerBee):
@@ -25,6 +28,15 @@ class HTTPWorkerBee(apiary.WorkerBee):
 
         self.options = options
         self.connection = None
+
+    def run(self):
+        if self.options.http_stats_dir:
+            self.stats = True
+            self.stats_file = open("%s/%s-%s.log" % (self.options.http_stats_dir, os.getpid(), threading.current_thread().name), "w")
+        else:
+            self.stats = False
+
+        super(HTTPWorkerBee, self).run()
 
     def start_job(self, job_id):
         try:
@@ -41,6 +53,9 @@ class HTTPWorkerBee(apiary.WorkerBee):
             #self.tally(request.split(" ", 1)[0])
 
             try:
+                if self.stats:
+                    start_time = time.time()
+
                 self.connection.sendall(request)
 
                 response = HTTPResponse(self.connection)
@@ -56,6 +71,9 @@ class HTTPWorkerBee(apiary.WorkerBee):
                 while response.read():
                     pass
 
+                if self.stats:
+                    print >> self.stats_file, time.time() - start_time
+
                 return True
             except Exception, e:  # TODO: more restrictive error catching?
                 self.error("error while sending request and reading response: %s" % e)
@@ -66,6 +84,9 @@ class HTTPWorkerBee(apiary.WorkerBee):
         return False
 
     def finish_job(self, job_id):
+        if self.stats:
+            self.stats_file.flush()
+
         if self.connection:
             try:
                 self.connection.close()
@@ -91,5 +112,6 @@ def add_options(parser):
     g.add_option('--http-read-size',
                       default=1024, type='int', metavar='BYTES',
                       help='Chunk size when reading (and discarding) response body (default: %default)')
+    g.add_option('--http-stats-dir', metavar='DIR', help="where to store request time information (default: don't)")
 
     parser.add_option_group(g)
