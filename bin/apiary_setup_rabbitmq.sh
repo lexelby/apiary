@@ -54,11 +54,13 @@ then
     exit 1
 fi
 
-$RMQCTL delete_vhost /apiary
-$RMQCTL delete_user apiary
-$RMQCTL add_user apiary beehonest
-$RMQCTL add_vhost /apiary
-$RMQCTL set_permissions -p /apiary apiary '.*' '.*' '.*'
+vhost=${1:-/apiary}
 
+$RMQCTL delete_vhost $vhost
+$RMQCTL add_vhost $vhost
 
+if ! $RMQCTL list_users | cut -f 1 | grep '^apiary$'; then
+    $RMQCTL add_user apiary beehonest
+fi
+$RMQCTL set_permissions -p $vhost apiary '.*' '.*' '.*'
 
