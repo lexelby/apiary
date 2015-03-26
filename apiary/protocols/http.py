@@ -39,6 +39,9 @@ class HTTPWorkerBee(apiary.WorkerBee):
         super(HTTPWorkerBee, self).run()
 
     def start_job(self, job_id):
+        self.current_job_id = job_id
+        self.request_num = -1
+
         try:
             self.connection = socket.socket()
             self.connection.settimeout(self.options.http_timeout)
@@ -48,6 +51,8 @@ class HTTPWorkerBee(apiary.WorkerBee):
             self.connection = None
 
     def send_request(self, request):
+        self.request_num += 1
+
         if self.connection:
             # tally request method
             #self.tally(request.split(" ", 1)[0])
@@ -72,7 +77,7 @@ class HTTPWorkerBee(apiary.WorkerBee):
                     pass
 
                 if self.stats:
-                    print >> self.stats_file, start_time, time.time() - start_time
+                    print >> self.stats_file, start_time, time.time() - start_time, self.current_job_id, self.request_num
 
                 return True
             except IncompleteRead:
