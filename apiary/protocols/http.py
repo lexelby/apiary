@@ -38,10 +38,7 @@ class HTTPWorkerBee(apiary.WorkerBee):
 
         super(HTTPWorkerBee, self).run()
 
-    def start_job(self, job_id):
-        self.current_job_id = job_id
-        self.request_num = -1
-
+    def _connect(self):
         try:
             self.connection = socket.socket()
             self.connection.settimeout(self.options.http_timeout)
@@ -50,8 +47,26 @@ class HTTPWorkerBee(apiary.WorkerBee):
             self.error("error while connecting: %s" % e)
             self.connection = None
 
+    def _disconnect(self):
+        if self.connection:
+            try:
+                self.connection.close()
+            except:
+                pass
+
+        self.connection = None
+
+    def start_job(self, job_id):
+        self.current_job_id = job_id
+        self.request_num = -1
+
+        self._connect()
+
     def send_request(self, request):
         self.request_num += 1
+
+        if not self.connection:
+            self._connect()
 
         if self.connection:
             # tally request method
@@ -68,13 +83,12 @@ class HTTPWorkerBee(apiary.WorkerBee):
 
                 self.tally(response.status)
 
-                if response.will_close:
-                    # We hope this won't happen, but deal with it if it does.
-                    self.connection.close()
-                    self.connection = None
-
                 while response.read():
                     pass
+
+                if response.will_close:
+                    # We hope this won't happen, but deal with it if it does.
+                    self._disconnect()
 
                 if self.stats:
                     print >> self.stats_file, start_time, time.time() - start_time, self.current_job_id, self.request_num
@@ -82,31 +96,24 @@ class HTTPWorkerBee(apiary.WorkerBee):
                 return True
             except IncompleteRead:
                 self.error("error while reading response: IncompleteRead (terminating job)")
-
-                if self.connection:
-                    self.connection.close()
-                    self.connection = None
+                self._disconnect()
 
             except Exception, e:  # TODO: more restrictive error catching?
-                self.error("error while sending request and reading response: %s" % e)
+                self.error("error while sending request and reading response: %s %s" % (type(e), e))
+                self._disconnect()
 
                 if self.connection:
                     self.connection.close()
                     self.connection = None
 
-        return False
+        # we want to keep trying in the face of errrors
+        return True
 
     def finish_job(self, job_id):
         if self.stats:
             self.stats_file.flush()
 
-        if self.connection:
-            try:
-                self.connection.close()
-            except:
-                pass
-
-        self.connection = None
+        self._disconnect()
 
 WorkerBee = HTTPWorkerBee
 
