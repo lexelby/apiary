@@ -87,7 +87,14 @@ class HTTPWorkerBee(apiary.WorkerBee):
                     pass
 
                 if response.will_close:
-                    # We hope this won't happen, but deal with it if it does.
+                    # We hope our Connection: keep-alive won't be ignored, but
+                    # deal with it if it does.
+                    self._disconnect()
+
+                if self.options.speedup < 0.8:
+                    # if we're slowing down by too much, keep-alive will just
+                    # result in the server getting bored between requests and
+                    # dropping the connection, so disable it.
                     self._disconnect()
 
                 if self.stats:
