@@ -29,6 +29,15 @@ class HTTPWorkerBee(apiary.WorkerBee):
         self.options = options
         self.connection = None
 
+        if options.http_stats_dir:
+            try:
+                os.mkdir(options.http_stats_dir)
+            except OSError, err:
+                if err.errno == 17:  # file exists
+                    pass
+                else:
+                    raise
+
     def run(self):
         if self.options.http_stats_dir:
             self.stats = True
