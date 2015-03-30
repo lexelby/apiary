@@ -213,6 +213,7 @@ class QueenBee(ChildProcess):
         self._index_file = arguments[0] + ".index"
         self._time_scale = 1.0 / options.speedup
         self._last_warning = 0
+        self._skip_counter = options.skip
         self.jobs_sent = Value('L', 0)
 
         if os.path.exists(self._index_file):
@@ -244,6 +245,13 @@ class QueenBee(ChildProcess):
                     job_start_time = tasks[0][0]
 
                 job_num += 1
+
+                if self._options.skip:
+                    if self._skip_counter == 0:
+                        self._skip_counter = self._options.skip
+                    else:
+                        self._skip_counter -= 1
+                        continue
 
                 # Check whether we're falling behind, and throttle sending so as
                 # not to overfill the queue.
@@ -488,6 +496,10 @@ def add_options(parser):
                       help="Time multiple used when replaying query logs.  2.0 means "
                            "that queries run twice as fast (and the entire run takes "
                            "half the time the capture ran for).")
+    parser.add_option('--skip', default=0, type='int', metavar='NUM',
+                      help='''Skip this many jobs before running a job.  For example,
+                           a value of 31 would skip 31 jobs, run one, skip 31, etc, so
+                           1 out of every 32 jobs would be run.''')
     parser.add_option('--max-ahead', default=300, type='int', metavar='SECONDS',
                       help='''How many seconds ahead the QueenBee may get in sending
                            jobs to the queue.  Only change this if RabbitMQ runs out
