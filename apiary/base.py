@@ -251,6 +251,8 @@ class QueenBee(ChildProcess):
                         self._skip_counter = self._options.skip
                     else:
                         self._skip_counter -= 1
+
+                    if self._skip_counter != self._options.offset:
                         continue
 
                 # Check whether we're falling behind, and throttle sending so as
@@ -500,6 +502,11 @@ def add_options(parser):
                       help='''Skip this many jobs before running a job.  For example,
                            a value of 31 would skip 31 jobs, run one, skip 31, etc, so
                            1 out of every 32 jobs would be run.''')
+    parser.add_option('--offset', default=0, type='int', metavar='NUM',
+                      help='''When skipping jobs, this chooses which ones to run.  For
+                              example, with a skip of 1, you could run apiary on two
+                              hosts, one with an offset of 0 and one with an offset of
+                              1 to run all jobs.''')
     parser.add_option('--max-ahead', default=300, type='int', metavar='SECONDS',
                       help='''How many seconds ahead the QueenBee may get in sending
                            jobs to the queue.  Only change this if RabbitMQ runs out
