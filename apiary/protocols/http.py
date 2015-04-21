@@ -114,6 +114,11 @@ class HTTPWorkerBee(apiary.WorkerBee):
                 while response.read():
                     pass
 
+                if self.stats and response.status >= 500:
+                    file_name = '%s/%s.%s.%s' % (self.options.http_stats_dir, self.current_job_id, self.request_num, response.status)
+                    with open(file_name, 'w') as log:
+                        log.write(request)
+
                 if response.will_close:
                     # We hope our Connection: keep-alive won't be ignored, but
                     # deal with it if it does.
