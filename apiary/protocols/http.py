@@ -18,6 +18,9 @@ from httplib import HTTPResponse, IncompleteRead
 import threading
 
 
+content_length_re = re.compile('content-length:\s+([0-9]+)\r\n', re.I | re.S)
+
+
 class HTTPWorkerBee(apiary.WorkerBee):
     """A WorkerBee that sends HTTP Requests"""
 
@@ -73,6 +76,22 @@ class HTTPWorkerBee(apiary.WorkerBee):
 
     def send_request(self, request):
         self.request_num += 1
+
+        # Sanity check: if we're sending a request with a content-length but
+        # we don't have that many bytes to send, we'll just get a 504.  Don't
+        # send it and instead report a client error.
+
+        parts = request.split('\r\n\r\n', 1)
+
+        if len(parts) > 1:
+            req, body = parts
+
+            match = content_length_re.search(req)
+            if match:
+                if len(body) < int(match.group(1)):
+                    self.tally(499)
+
+                    return True
 
         if not self.connection:
             self._connect()
