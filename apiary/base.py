@@ -254,7 +254,7 @@ class QueenBee(ChildProcess):
 
                     job_start_second = int(job_start_time)
                     if job_start_second > self._last_job_start_time:
-                        self._skip = min(self._options.min_skip,
+                        self._skip = max(self._options.min_skip,
                                          self._options.skip - (job_start_second / self._options.ramp_time))
 
                     self._last_job_start_time = job_start_second
