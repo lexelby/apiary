@@ -214,6 +214,8 @@ class QueenBee(ChildProcess):
         self._time_scale = 1.0 / options.speedup
         self._last_warning = 0
         self._skip_counter = options.skip
+        self._last_job_start_time = 0
+        self._skip = options.skip
         self.jobs_sent = Value('L', 0)
 
         if os.path.exists(self._index_file):
@@ -246,9 +248,20 @@ class QueenBee(ChildProcess):
 
                 job_num += 1
 
-                if self._options.skip:
+                if self._options.ramp_time:
+                    # Adjust skip counter once per second since ramp_time has
+                    # one-second resolution anyway.
+
+                    job_start_second = int(job_start_time)
+                    if job_start_second > self._last_job_start_time:
+                        self._skip = min(self._options.min_skip,
+                                         self._options.skip - (job_start_second / self._options.ramp_time))
+
+                    self._last_job_start_time = job_start_second
+
+                if self._skip:
                     if self._skip_counter == 0:
-                        self._skip_counter = self._options.skip
+                        self._skip_counter = self._skip
                     else:
                         self._skip_counter -= 1
 
@@ -502,6 +515,12 @@ def add_options(parser):
                       help='''Skip this many jobs before running a job.  For example,
                            a value of 31 would skip 31 jobs, run one, skip 31, etc, so
                            1 out of every 32 jobs would be run.''')
+    parser.add_option('--ramp-time', default=0, type='int', metavar='SECONDS',
+                      help='''After this number of seconds, decrement the --skip
+                           by 1.  Continue in this way until --skip reaches
+                           --skip-min.''')
+    parser.add_option('--skip-min', default=0, type='int', metavar='NUM',
+                      help='''Lower bound on --skip when using --ramp-time.''')
     parser.add_option('--offset', default=0, type='int', metavar='NUM',
                       help='''When skipping jobs, this chooses which ones to run.  For
                               example, with a skip of 1, you could run apiary on two
