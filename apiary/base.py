@@ -519,7 +519,7 @@ def add_options(parser):
                       help='''After this number of seconds, decrement the --skip
                            by 1.  Continue in this way until --skip reaches
                            --skip-min.''')
-    parser.add_option('--skip-min', default=0, type='int', metavar='NUM',
+    parser.add_option('--min-skip', default=0, type='int', metavar='NUM',
                       help='''Lower bound on --skip when using --ramp-time.''')
     parser.add_option('--offset', default=0, type='int', metavar='NUM',
                       help='''When skipping jobs, this chooses which ones to run.  For
