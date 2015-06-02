@@ -4,3 +4,4 @@ A lot has changed since the README was last updated.  These things need to be do
   * countdb protocol
   * http protcol
     * tcpflow dependency
+  * --skip, --offset, --ramp-time, --min-skip
