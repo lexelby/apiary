@@ -48,9 +48,6 @@ def main(args=sys.argv[1:]):
     if options.debug:
         apiary.tools.debug.enable_debug()
 
-    if options.clean:
-        apiary.clean(options)
-
     if options.profile:
         from apiary.tools import lsprof
         profiler = lsprof.Profiler()
