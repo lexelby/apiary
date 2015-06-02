@@ -1,0 +1,6 @@
+A lot has changed since the README was last updated.  These things need to be documented:
+
+  * threading support
+  * countdb protocol
+  * http protcol
+    * tcpflow dependency
