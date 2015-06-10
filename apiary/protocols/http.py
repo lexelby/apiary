@@ -32,24 +32,6 @@ class HTTPWorkerBee(apiary.WorkerBee):
         self.options = options
         self.connection = None
 
-        if options.http_stats_dir:
-            try:
-                os.mkdir(options.http_stats_dir)
-            except OSError, err:
-                if err.errno == 17:  # file exists
-                    pass
-                else:
-                    raise
-
-    def run(self):
-        if self.options.http_stats_dir:
-            self.stats = True
-            self.stats_file = open("%s/%s-%s.log" % (self.options.http_stats_dir, os.getpid(), threading.current_thread().name), "w")
-        else:
-            self.stats = False
-
-        super(HTTPWorkerBee, self).run()
-
     def _connect(self):
         try:
             self.connection = socket.socket()
@@ -89,7 +71,7 @@ class HTTPWorkerBee(apiary.WorkerBee):
             match = content_length_re.search(req)
             if match:
                 if len(body) < int(match.group(1)):
-                    self.tally(499)
+                    self.error("request body of incorrect size")
 
                     return True
 
@@ -101,9 +83,6 @@ class HTTPWorkerBee(apiary.WorkerBee):
             #self.tally(request.split(" ", 1)[0])
 
             try:
-                if self.stats:
-                    start_time = time.time()
-
                 self.connection.sendall(request)
 
                 response = HTTPResponse(self.connection)
@@ -113,11 +92,6 @@ class HTTPWorkerBee(apiary.WorkerBee):
 
                 while response.read():
                     pass
-
-                if self.stats and response.status >= 500:
-                    file_name = '%s/%s.%s.%s' % (self.options.http_stats_dir, self.current_job_id, self.request_num, response.status)
-                    with open(file_name, 'w') as log:
-                        log.write(request)
 
                 if response.will_close:
                     # We hope our Connection: keep-alive won't be ignored, but
@@ -129,9 +103,6 @@ class HTTPWorkerBee(apiary.WorkerBee):
                     # result in the server getting bored between requests and
                     # dropping the connection, so disable it.
                     self._disconnect()
-
-                if self.stats:
-                    print >> self.stats_file, start_time, time.time() - start_time, self.current_job_id, self.request_num
 
                 return True
             except IncompleteRead:
@@ -172,6 +143,5 @@ def add_options(parser):
     g.add_option('--http-read-size',
                       default=1024, type='int', metavar='BYTES',
                       help='Chunk size when reading (and discarding) response body (default: %default)')
-    g.add_option('--http-stats-dir', metavar='DIR', help="where to store request time information (default: don't)")
 
     parser.add_option_group(g)

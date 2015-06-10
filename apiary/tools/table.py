@@ -11,7 +11,16 @@ ALIGN_RIGHT = ">"
 
 
 def format_table(rows):
-    widths = [max(len(r[i][1]) for r in rows) for i in xrange(len(rows[0]))]
+    if not rows:
+        return
+
+    num_cols = max(len(row) for row in rows)
+
+    # make all rows as long as the longest
+    rows = [row + [(ALIGN_LEFT, "")] * (num_cols - len(row)) for row in rows]
+
+    # calculate max column widths
+    widths = [max(len(r[i][1]) for r in rows) for i in xrange(num_cols)]
 
     output = ""
     for row in rows:

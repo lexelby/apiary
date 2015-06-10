@@ -7,9 +7,20 @@ Periodically, apairy calls report() to retrieve information from the statistic.
 Statistics should aggregate information between calls to report().  They should
 also produce information about the change in each value since the last call
 to report().
+
+Types of stats:
+
+    tally  - Tracks the total number of a certain kind of event.  Reports the
+            number of events in each interval, and the total number of
+            events.
+    level  - Tracks a quantity that increments and decrements.  Reports the
+            current level and the high/low/median/mean during the interval.
+    series - Tracks a value as it changes over time.  Reports the mean/median/
+            min/max/stdev in the interval.
 """
 
 import numpy
+import math
 from collections import OrderedDict
 from .table import ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT
 
@@ -47,7 +58,7 @@ class Statistic(object):
         row = []
 
         for name, value in current.iteritems():
-            row.append((ALIGN_RIGHT, name + ":"))
+            row.append((ALIGN_RIGHT, name.lower() + ":"))
             row.append((ALIGN_RIGHT, self.format_number(value)))
 
             if name in self._last:
@@ -72,11 +83,25 @@ class IntegerStatistic(Statistic):
 
 
 class FloatStatistic(Statistic):
+    def _get_precision(self, f, significant_figures, min_precision=3):
+        # I don't want to print in scientific notation.  It's harder to
+        # quickly visually compare numbers with exponents.  Instead, I'd like to
+        # show a minimum number of significant figures, and print
+        # as many digits as are necessary to make this happen.
+
+        if f == 0:
+            # just protecting against taking the log of 0 here, so comparing
+            # a float to 0 is okay
+            exponent = 0
+        else:
+            exponent = int(math.ceil(math.log10(abs(f))))
+        return max(significant_figures - exponent, min_precision)
+
     def format_number(self, value):
-        return "%.4g" % value
+        return "%.*f" % (self._get_precision(value, 6), value)
 
     def format_change(self, value):
-        return "(%+.4g)" % value
+        return "(%+.3g)" % value
 
 
 class Tally(IntegerStatistic):
@@ -94,7 +119,7 @@ class Tally(IntegerStatistic):
 
         stats = OrderedDict()
 
-        stats["This Period"] = self._total
+        stats["Current"] = self._total
         stats["Total"] = self._grand_total
 
         return stats
@@ -118,13 +143,15 @@ class Level(IntegerStatistic):
         self._levels.append(self._level)
 
     def reset(self):
-        self._levels = [self._level]
+        self._levels = []
 
     def calculate(self):
         stats = OrderedDict()
 
         stats['Current'] = self._level
-        add_series_stats(stats, self._levels)
+
+        if self._levels:
+            add_series_stats(stats, self._levels)
 
         return stats
 
@@ -144,8 +171,9 @@ class Series(FloatStatistic):
     def calculate(self):
         stats = OrderedDict()
 
-        stats['Current'] = self._values[-1]
-        add_series_stats(stats, self._values)
+        if self._values:
+            stats['Current'] = self._values[-1]
+            add_series_stats(stats, self._values)
 
         return stats
 

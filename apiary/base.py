@@ -44,11 +44,17 @@ import cPickle
 import MySQLdb
 import time
 import warnings
+from datetime import datetime
 from threading import Thread
 from multiprocessing import Value, Queue
+from multiprocessing.queues import Empty
+from collections import defaultdict
+from itertools import chain
 
 from apiary.tools.childprocess import ChildProcess
 from apiary.tools.debug import debug, traced_func, traced_method
+from apiary.tools.stats import Tally, Level, Series
+from apiary.tools.table import format_table, ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT
 
 verbose = False
 
@@ -126,54 +132,77 @@ class BeeKeeper(object):
 
 
 class StatsGatherer(ChildProcess):
+    """Gather and present stats.
+
+    The StatsGatherer process reads messages off of the stats queue sent by the
+    workers and aggregates them.  It prints a report periodically.
+
+    See tools.stats for a description of the kinds of statistics that are
+    available.
+    """
 
     def __init__(self, options, stats_queue):
         super(StatsGatherer, self).__init__()
 
         self._options = options
         self._verbose = options.verbose
-        self._tally = {}
-        self._tally_time = time.time() + 15.0
+        self._tallies = defaultdict(Tally)
+        self._levels = defaultdict(Level)
+        self._series = defaultdict(Series)
+        self._last_report = time.time()
         self._worker_count = 0
         self._queue = stats_queue
-
-    def tally(self, msg):
-        self._tally[msg] = self._tally.get(msg, 0) + 1
-        if time.time() > self._tally_time:
-            self.print_tally()
-
-    def print_tally(self):
-        keys = self._tally.keys()
-        keys.sort()
-        print
-        print "       count - message"
-        print "------------   -------------------------------------------"
-        for k in keys:
-            print ("%12d - %s" % (self._tally[k], k))
-        sys.stdout.flush()
-        self._tally_time = time.time() + 15.0
 
     @traced_method
     def worker_status(self, message):
         if message.type == Message.STOP:
             debug('Stopping stats gatherer.')
-            self.print_tally()
             return True
-        elif message.type == Message.JOB_STARTED:
-            self.tally("Started Job")
-        elif message.type == Message.JOB_COMPLETED:
-            self.tally("Finished Job")
-        elif message.type == Message.JOB_ERROR:
-            self.tally("Job aborted due to error: %s" % message.body)
-        elif message.type == Message.JOB_TALLY:
-            # Tally a generic message.
-            self.tally(message.body)
+        elif message.type == Message.STAT_TALLY:
+            #print "tally", message.body
+            self._tallies[message.body].add()
+        elif message.type == Message.STAT_LEVEL:
+            #print "level", message.body[0], message.body[1]
+            self._levels[message.body[0]].add(message.body[1])
+        elif message.type == Message.STAT_SERIES:
+            #print "series", message.body[0], message.body[1]
+            self._series[message.body[0]].add(message.body[1])
         else:
             print >> sys.stderr, "Received unknown worker status: %s" % message
 
+    def report(self):
+        self._last_report = time.time()
+
+        timestamp = datetime.now().strftime('%F %T')
+
+        print
+        print timestamp
+        print "=" * len(timestamp)
+
+        table = []
+
+        for name, stat in chain(self._tallies.iteritems(),
+                                self._levels.iteritems(),
+                                self._series.iteritems()):
+            report = stat.report()
+
+            if report:
+                row = [(ALIGN_RIGHT, "%s: " % name)]
+                row.extend(report)
+                table.append(row)
+
+        print format_table(table) or "",
+
     def run_child_process(self):
         while True:
-            done = self.worker_status(self._queue.get())
+            try:
+                done = self.worker_status(self._queue.get(timeout=1))
+            except Empty:
+                done = False
+
+            if done or time.time() - self._last_report > self._options.stats_interval:
+                self.report()
+
             if done:
                 break
 
@@ -281,15 +310,19 @@ class WorkerBee(Thread):
         self.time_scale = 1.0 / options.speedup
 
     def status(self, status, body=None):
-        #print 'status:', status, body
         self.stats_queue.put(Message(status, body))
 
-    def error(self, body):
-        #print 'error:', body
-        self.status(Message.JOB_ERROR, body)
+    def error(self, message):
+        self.status(Message.STAT_TALLY, "ERR: <%s>" % message)
 
-    def tally(self, body):
-        self.status(Message.JOB_TALLY, body)
+    def tally(self, name):
+        self.status(Message.STAT_TALLY, name)
+
+    def level(self, name, increment):
+        self.status(Message.STAT_LEVEL, (name, increment))
+
+    def series(self, name, value):
+        self.status(Message.STAT_SERIES, (name, value))
 
     def process_message(self, message):
         if message.type == Message.STOP:
@@ -310,10 +343,7 @@ class WorkerBee(Thread):
                 print "ERROR: worker read the wrong job: expected %s, read %s" % (job_id, read_job_id)
                 return
 
-            self.status(Message.JOB_STARTED)
-
             if self.dry_run or not tasks:
-                self.status(Message.JOB_COMPLETED)
                 return
 
             started = False
@@ -335,26 +365,36 @@ class WorkerBee(Thread):
                 #    print "worker fell behind by %.5f seconds" % (-offset)
 
                 if not started:
+                    self.level("Jobs Running", "+")
                     self.start_job(job_id)
                     started = True
 
                 #print "sending request", request
+                self.level("Requests Running", "+")
+                request_start_time = time.time()
                 error = not self.send_request(request)
+                request_end_time = time.time()
+                self.level("Requests Running", "-")
+                self.series("Request Duration (ms)", (request_end_time - request_start_time) * 1000)
                 if error:
                     break
 
             self.finish_job(job_id)
+            self.level("Jobs Running", "-")
 
             if not error:
                 self.status(Message.JOB_COMPLETED)
 
-    def init_job(self, job_id):
+    def start_job(self, job_id):
         pass
 
     def send_request(self, request):
         raise NotImplementedError('protocol plugin must implement send_request()')
 
     def finish_request(self, request):
+        raise NotImplementedError('protocol plugin must implement send_request()')
+
+    def finish_job(self, job_id):
         pass
 
     def run(self):
@@ -385,20 +425,19 @@ class WorkerBeeProcess(ChildProcess):
             self.threads.append(thread)
             time.sleep(delay)
 
-        print "spawned %d threads" % len(self.threads)
+        debug("spawned %d threads" % len(self.threads))
 
         for thread in self.threads:
             thread.join()
 
-        print 'worker ended'
+        debug('worker ended')
 
 class Message (object):
     STOP = 3
-    JOB_STARTED = 5
-    JOB_COMPLETED = 6
-    JOB_ERROR = 7
-    JOB_TALLY = 9
     JOB = 8
+    STAT_TALLY = 9
+    STAT_LEVEL = 10
+    STAT_SERIES = 11
 
     def __init__(self, type, body=None):
         self.type = type
@@ -464,3 +503,5 @@ def add_options(parser):
                            much memory''')
     parser.add_option('-n', '--dry-run', default=False, action='store_true',
                       help='''Don't actually send any requests.''')
+    parser.add_option('-i', '--stats-interval', type=int, default=15, metavar='SECONDS',
+                      help='''How often to report statistics, in seconds.''')
