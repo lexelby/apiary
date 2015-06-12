@@ -504,4 +504,4 @@ def add_options(parser):
     parser.add_option('-n', '--dry-run', default=False, action='store_true',
                       help='''Don't actually send any requests.''')
     parser.add_option('-i', '--stats-interval', type=int, default=15, metavar='SECONDS',
-                      help='''How often to report statistics, in seconds.''')
+                      help='''How often to report statistics, in seconds. (default: %default)''')
