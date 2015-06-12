@@ -1,0 +1,176 @@
+#!/usr/bin/env python
+
+import sys
+import os.path
+import re
+import cPickle
+import time
+from heapq import heappush, heappop
+from dateutil.parser import parse as parse_datetime
+from dateutil.tz import tzutc
+from datetime import datetime
+from pprint import pprint
+
+
+UTC = tzutc()
+
+def unix_time(dt):
+    """Why is there no function for this?"""
+    epoch = datetime.utcfromtimestamp(0).replace(tzinfo=UTC)
+    delta = dt - epoch
+    return delta.total_seconds()
+
+
+# Packets were captured with gulp (http://staff.washington.edu/corey/gulp/).
+# TCP flows parsed and dumped by tcpflow (https://github.com/simsong/tcpflow)
+# using this command: tcpflow -r foo.pcap -I -FT -Fc -Fg -o flows
+# which produces a directory tree containing flows, two files per flow.  One
+# file contains the data, and one contains the timing data.  A summary file,
+# report.xml, lists all connections, almost though not completely in
+# chronological order.
+
+FILENAME_RE = re.compile('<filename>([^<]+)</filename>')
+START_TIME_RE = re.compile("<tcpflow startime='([^']+)'")
+
+
+def parse_report(report_path):
+    report = open(report_path)
+
+    files = []
+
+    current_file_name = None
+
+    for line in report:
+        match = FILENAME_RE.search(line)
+        if match:
+            current_file_name = match.group(1)
+        else:
+            match = START_TIME_RE.search(line)
+            if match and current_file_name:
+                start_time = match.group(1)
+
+                files.append((start_time, current_file_name))
+
+                current_file_name = None
+
+    return files
+
+
+def is_request_start(data):
+    return data.startswith('GET /') or data.startswith('POST /')
+
+
+def parse_flow(flow_path, start_timestamp):
+    """Disassemble a flow of HTTP requests given sent data and temporal index.
+
+    This relies heavily on the fact that requests in our traffic flow seem to
+    always start and end on packet boundaries.  It's possible that the start (or
+    even the middle or end) of an HTTP request was missed in the capture.
+
+    This is a really basic algorithm that makes a lot of assumptions.  It's
+    conceivably possible that, for example, a request could contain a verbatim
+    "GET /" in it somewhere and that that text might line up on a packet
+    boundary.  In that case, our request flow will be corrupted, but this is
+    rare enough that the overall load test will probably not be noticeably
+    impacted.
+    """
+
+    requests = []
+
+    data = open(flow_path)
+    index = open(flow_path + ".findx")
+
+    current_request = None
+    current_request_timestamp = None
+    in_request = False
+
+    for line in index:
+        offset, timestamp, length = line.split('|')
+        timestamp = float(timestamp) - start_timestamp
+
+        packet = data.read(int(length))
+
+        if is_request_start(packet):
+            # A new request is starting.
+
+            # If we already had a request going, store it.
+            if in_request:
+                requests.append((current_request_timestamp, current_request))
+            else:
+                in_request = True
+
+            current_request = packet
+            current_request_timestamp = timestamp
+        else:
+            if in_request:
+                current_request += packet
+
+    if in_request:
+        # Finish off the last request.
+        requests.append((current_request_timestamp, current_request))
+    else:
+        #print >> sys.stderr, "never found the start of a request in", flow_path
+        pass
+
+    return requests
+
+
+def main():
+    report = sys.argv[1]
+    jobs_file = open(sys.argv[2], 'w')
+
+    print "reading file list"
+
+    files = sorted(parse_report(report))
+    num_files = len(files)
+
+    print "...done, %d files found" % num_files
+
+    print "generating jobs"
+
+    job_id = 0
+    num_requests = 0
+    num_bogus = 0
+    start_timestamp = unix_time(parse_datetime(files[0][0]))
+
+    # This list is a heap that will be managed by the heapq module's heappush()
+    # and heappop().  The "start time" given in the report.xml is when the SYN
+    # was seen.  We have to process the entire flow to figure out when the first
+    # (valid) request started.
+    #
+    # Apiary requires that the jobs in the jobs file are strictly in order of
+    # when their first HTTP request starts.  It's possible for a flow to start
+    # with seconds of bogus data if the capture missed the start of a big file
+    # upload.  This means that just adding jobs in the order seen in the report
+    # will give us out-of-order jobs.
+    #
+    # A heap will let us efficiently sort items as we add them.  We can pop jobs
+    # off the list and write them to the file once their first timestamp is
+    # before the SYN of the flow we're currently processing.
+    jobs = []
+
+    for i, (timestamp, flow) in enumerate(files):
+        timestamp = unix_time(parse_datetime(timestamp)) - start_timestamp
+
+        if i % 1000 == 0:
+            while jobs and jobs[0][0] < timestamp:
+                jobs_file.write(jobs[0][1])
+                heappop(jobs)
+
+            print "%d files processed, %d unflushed, %0.2f%% complete (%d bogus files)" % (i, len(jobs), float(i) * 100 / num_files, num_bogus)
+
+        requests = parse_flow(flow, start_timestamp)
+
+        if requests:
+            num_requests += len(requests)
+
+            for request in requests:
+                heappush(jobs, (request[0], cPickle.dumps((job_id, (request,)))))
+                job_id += 1
+        else:
+            num_bogus += 1
+
+    print "created %d jobs containing %d total requests (%d bogus files)" % (job_id + 1, num_requests, num_bogus)
+
+if __name__ == '__main__':
+    sys.exit(main())
