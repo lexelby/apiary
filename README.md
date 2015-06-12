@@ -96,6 +96,12 @@ Capture traffic using your favorite packet capture tool.  Only the requests are 
 
     tcpflow -r foo.pcap -Fm -I -Z -o flows
 
+Note that tcpflow can be very picky about the pcap.  If your pcap is terminated mid-packet, tcpflow may crash at the end without flushing out any streams buffered in memory.  To avoid this, pre-process your pcap with `tcpdump` to remove the partial packet:
+
+    tcpdump -r foo.pcap -w foo_fixed.pcap
+
+Annoying, but it works.
+
 This uses the undocumented -I switch to save timing information.  -Z prevents decompressing gzip-encoded HTTP requests -- we want apiary to send them just as they were.
 
 Next, use `bin/genjobs-http` or `bin/genjobs-http-individual` to generate a jobs file.  These two are the same except that the latter ignores the observed keep-alive in the packet capture and sends all requests with a new connection.
