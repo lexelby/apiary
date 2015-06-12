@@ -1,110 +1,139 @@
 SUMMARY
--------
+=======
 
-apiary is a load-testing framework for MySQL, written in Python, that replays 
-captured queries, simulating production load patterns.
+Apiary is a multi-protocol load testing and benchmarking tool.  Unlike most load-testing tools that generate artificial load programmatically, Apiary replays captured production load at a test host.  This is critically important in allowing you to gather useful information that lets you make confident predictions of how a system will perform in production.  Apiary goes to a lot of trouble to replay traffic with the same timing and parallelization as seen in the captured traffic.  It can also simulate higher or lower load by adjusting the time scale by an arbitrary floating-point multiple.
 
-A QueenBee process feeds sequences of one or more messages into an AMQP queue,
-and one or more WorkerBee processes retrieve sequences from the queue, send the
-associated messages to the specified target host, and report their results to
-the BeeKeeper to be tallied.  The QueenBee prints a summary of the progress
-every 15 seconds and when all the WorkerBees are done.  The QueenBee and 
-WorkerBees work together to attempt to mimic production load patterns as 
-closely as possible, including timing.
+To use apiary, you capture production traffic using your favorite tool that generates a pcap file (`tcpdump`, `gulp`, etc).  Next you post-process the pcap file into a `.jobs` file, which describes the sequences of requests that each simulated client will make, along with their exact timings.  Optionally, you can then analyze this jobs file to determine the number of worker threads you'll need.  Finally, you run apiary, which fires off queries and tabulates statistics.
 
-Query timing can be slowed down or sped up by an arbitrary factor using the
---speedup option.  In testing, Apiary has reproduced 30,000 queries per 
-second when run on a powerful test system.  An ideal system will have at least 4
-CPU cores that are as fast as possible.  This is preferable to more cores that
-are slower.  The gating factor tends to be RabbitMQ.
+The Apiary project is a toolset containing the following components:
+  * `bin/apiary`, the load simulation tool
+  * various scripts to process pcap files into `.jobs` files (`bin/genjobs-*`)
+  * other scripts such as `bin/count-concurrent-jobs`
+  * protocol plugins
+
+
+PERFORMANCE
+===========
+
+Apiary has been used to produce 30,000+ MySQL queries per second when run on a powerful test system.  It has also produced 3000 HTTP requests per second on a moderately powerful test system, and 100,000 CountDB (simple TCP) requests per second.  It can run 6000 simultaneous worker threads without issue and maintain proper timing.
+
+The overall structure of Apiary is multiple processes with multiple threads per process, similar to Apache's `mpm_worker`.  The 6000 thread scenario mentioned above involved 100 worker processes, each with 60 threads.  Common wisdom is that Python is terrible at threads due to the Global Interpreter Lock(GIL), and that 6000 processes would be too heavy-weight and would consume too much memory to be feasible.  This would indicate an asynchronous approach such as twisted, eventlet, etc.  However, because most of Apiary's worker threads are blocked on IO the vast majority of the time, the GIL doesn't slow things down too badly.  Somewhat surprisingly, a reasonably powerful multiprocessor Linux machine is perfectly capable of running 6000 threads doing lots of blocking IO without spending too much time context-switching.
+
+In the most recent incarnation of Apiary (see HISTORY), no attempt has yet been made to automatically run workers on multiple hosts.  This can still be accomplished through the use of --skip and --offset to split load generation out to multiple hosts, so long as apiary is started at about the same time on all hosts.
 
 REQUIREMENTS
-------------
+============
 
-* RabbitMQ >= 1.6
-
-* lsprof (if you want to use --profile)
-http://codespeak.net/svn/user/arigo/hack/misc/lsprof/
-
-* py-amqplib (only tested with an implementation of the 0-8 spec)
-http://hg.barryp.org/py-amqplib/file/
-
-* maatkit or percona-toolkit (either may be available in your Linux distribution)
-http://www.percona.com/software/percona-toolkit
+  * percona-toolkit (for MySQL protocol only)
+    * http://www.percona.com/software/percona-toolkit
+  * python-mysqldb
+    * FIXME: currently required even if you don't use the MySQL protocol
+  * tcpflow (for TCP)
+    * https://github.com/simsong/tcpflow
+  * lsprof (if you want to use --profile)
+    * http://codespeak.net/svn/user/arigo/hack/misc/lsprof/
 
 
-RABBITMQ SETUP
---------------
+MySQL TUTORIAL
+========
 
-To configure a local, running instance of RabbitMQ, execute the following:
+WARNING: This tutorial will guide you through capturing MySQL traffic from a production server.  This potentially dangerous activity has the possibility of saturating your server's network link, disk, and/or CPU, impacting production query processing.  Please exercise caution.  The authors of Apiary will not be responsible for any such impact or damage resulting from it.
 
-    sudo bin/apiary_setup_rabbitmq.sh
+What we'll do:
+  1. Make a snapshot of the MySQL database.
+  2. Capture query traffic starting at the moment the database snapshot is taken.
+  3. Process the snapshot into a `.jobs` file.
+  4. Replay the `.jobs` file against a test host.
 
-This will delete the apiary vhost and user, re-add them, and then set up
-the appropriate permissions.  This must be run as root.
+It's important to capture the database snapshot and query traffic as close to simultaneously as possible.  Failure to do this may result in inaccurate load simulation and duplicate key errors.
 
+First, you'll need a replicating set of at least two MySQL hosts.  One common structure for MySQL replicating sets is to have a "backup" host from which regular snapshots are taken.  This host is an ideal place to take your snapshot.  Wait until this host is caught up in its replication, and prepare to take a snapshot using your normal backup snapshot method or any other method you like.
 
-TUTORIAL
---------
+Next, prepare to take a packet capture from your database host.  This can be from the master, a read slave, or even multiple hosts in the same replicating tree.  TEST THIS FIRST to ensure that you can safely capture traffic without impacting production query processing.  Consider that heavily-loaded database servers may have high network traffic, and writing this to the same disk that your database lives on will cause contention and filesystem cache invalidation.  Be sure to capture only traffic you need by filtering to port 3306 and disabling promiscuous mode (`tcpdump -p`).  Be careful!
 
-This tutorial assumes you have mysql running on localhost with no password for
-the root user.  Adapt the commands below appropriately if that is not the case.
+My preferred packet capture method is to run this from a non-production host with a big disk:
 
-1. Some sample data is included.  This will create an "apiary_demo" database:
+  ssh <db host> sudo timeout 5m tcpdump -n -p -w - -s 0 port 3306 > db.pcap
 
-    mysql -u root < doc/examples/demo.sql
+This will stream the packet capture over your SSH tunnel to your non-production host, avoiding disk IO contention on the database host.  Be sure to filter your capture so that you don't try to capture port 22; otherwise you'll probably have a pretty bad day.
 
-2. Use tcpdump to capture mysql traffic for consumption by pt-query-digest:
+Once you've got your packet capture commands ready, start your database snapshot and packet capture at the same time and wait until they finish.  Capture as much traffic as you'd like to be able to simulate, keeping in mind that you might want to play it back at double speed or more to test a load spike scenario or growth.
 
-    sudo tcpdump -i lo port 3306 -s 65535 -x -n -q -tttt> /tmp/tcpdump.out
+Next, you'll need to process your traffic capture into a jobs file.  The process looks like this:
 
-3. In a separate terminal, generate some queries against the test data:
+  1. reprocess the pcap into the format expected by `pt-query-digest`
+  2. run `pt-query-digest` to produce a query log tagged with timing information and client identifiers
+  3. run `bin/genjobs` to process the query log into a jobs file
 
-    while read query; do \
-        mysql -u root -h localhost --protocol=TCP -e "$query" apiary_demo > /dev/null; \
-        sleep 0.1; \
-    done < doc/examples/demo_queries.sql
+We can combine steps 1 and 2 (and probably 3, if you tried hard enough):
 
-4. Stop the tcpdump process that you started in step 2.
+  tcpdump -r <pcap file> -x -n -q -tttt | \
+    pt-query-digest --type=tcpdump --no-report --output slowlog query.log
 
-5. Turn the tcpdump data into a query digest using percona-toolkit:
+This can take a very long time, so sit back.  It can also consume a large amount of RAM.
 
-    pt-query-digest --type=tcpdump --no-report --output slowlog /tmp/tcpdump.out > /tmp/apiary_query_digest.txt
+Next:
 
-Use mk-query-digest if you have maatkit instead of percona-toolkit.  They both work identically.
+  bin/genjobs query.log > foo.jobs
 
-6. Convert the query digest into a sequence file:
+This also takes quite awhile.  The reason these take so long is that they're sorting massively interleaved streams into individual client/server conversations.  Additionally, the jobs file must be sorted by the timestamp of each job's first query.  This requires `genjobs` to hold in-flight jobs in memory and flush them to disk in order as their ends are found.
 
-    bin/genjobs /tmp/apiary_query_digest.txt > /tmp/apiary_test.jobs
+Now, we have our jobs file and we can simulate load.  Spin up a new MySQL host to test on and load the snapshot you made earlier.  Keep in mind that every time you run your load scenario, you're going to need to use a fresh copy of the snapshot.  LVM can be particularly useful for rolling back to the pristine snapshot and seems to impose a relatively minimal performance penalty.
 
-7. Run apiary:
-    bin/apiary --workers 10 --mysql-user root --mysql-db apiary_demo --mysql-host localhost /tmp/apiary_test.jobs
+Run apiary:
+  bin/apiary --workers <#> --threads <#> --protocol mysql --mysql-host <test host> --mysql-user <user> --mysql-passwd <password> --mysql-db <db> foo.jobs
 
-9. Apiary will fork Queenbee, WorkerBee, and Beekeeper processes internally.  
-  They will work together to read and execute your traffic.  Apiary will very
-  quickly print this message:
+Apiary will start up workers and begin to report statistics periodically, by default every 15 seconds.  Apiary reports various statistics (depending on the protocol in use) and also reports how these change from interval to interval.
 
-  Waiting for workers to complete jobs and terminate (may take up to 300 seconds)...
+You can shut down Apiary using Ctrl-C.  This causes the Queen Bee to stop enqueueing jobs for the Worker Bees.  Once they finish running all jobs in the queue, Apiary will shut down.  A second Ctrl-C will immediately terminate Apiary.
 
-  This is because the QueenBee prefills the job queue with up to 300 seconds of query
-  traffic to make sure that the WorkerBees never run out of jobs to run.
+HTTP
+====
 
-10. You should see a summary of the results as queries are being executed and
-  after all queries have been replayed.
+Apiary can replay captured HTTP traffic, including keep-alive patterns (but not pipelining).  Requests are sent as seen on the wire without processing.  Responses are parsed in order to properly read a full response for each request, and HTTP response codes are tallied.
 
+Capture traffic using your favorite packet capture tool.  Only the requests are used by Apiary, and it is allowable to capture only incoming traffic with your capture tool.  Use `tcpflow` to parse the pcap file into streams, one per file, with timing information:
 
-NOTES
------
+  tcpflow -r foo.pcap -Fm -I -Z -o flows
 
-I found this command line useful to reset between tests:
+This uses the undocumented -I switch to save timing information.  -Z prevents decompressing gzip-encoded HTTP requests -- we want apiary to send them just as they were.
 
-sudo pkill -f rabbitmq; pkill -f bin/apiary; sudo /etc/init.d/rabbitmq-server start; sudo bin/apiary_setup_rabbitmq.sh ; watch -n 1 sudo rabbitmqctl list_queues -p /apiary
+Next, use `bin/genjobs-http` or `bin/genjobs-http-individual` to generate a jobs file.  These two are the same except that the latter ignores the observed keep-alive in the packet capture and sends all requests with a new connection.
 
-I found these networking settings were useful with large query volumes:
+CountDB
+=======
+
+This one is a protocol used by an internal tool at DeviantArt.  It may be useful to see how new protocols can be added, or perhaps it might be useful for other services that use simple protocols.  It was written before the author knew about `tcpflow`.  `pkt2flow` (https://github.com/caesar0301/pkt2flow) might also have been useful here.
+
+TUNING
+======
+
+These networking settings are useful with large query volumes:
 
 sudo bash -c 'echo 1 > /proc/sys/net/ipv4/tcp_tw_reuse'
 sudo bash -c 'echo 1024 65535 > /proc/sys/net/ipv4/ip_local_port_range'
 
-Otherwise, you may start to see errors like "Could not connect to MySQL host",
-or "resource not available", because the kernel will quickly run out of local 
-ports it's willing to use.
+Otherwise, you may start to see errors like "Could not connect to MySQL host", or "resource not available", because the kernel will quickly run out of local ports it's willing to use.
+
+Also, be sure to run apiary with a high file descriptor limit when replaying large numbers of concurrent requests.
+
+Tuning worker threads is important.  Too few and your workers will fall behind and be unable to simulate full production load.  Too many, and in theory you'll run out of memory or consume too much time in context switching, though in practice, I've never seen this.  You can figure out the minimum number of workers required to run your jobs file like this:
+
+  bin/count-concurrent-jobs foo.jobs
+
+I'd probably add a margin of 10-20% just to be sure.  For high concurrency, you may need to experiment with a balance of processes and threads.  I'd recommend running no more than 80 threads per worker process.
+
+For more than a few hundred total threads, use --startup-wait to cause Apiary to pause and allow workers to initalize.  30-60 seconds is usually enough.  Failure to do this may cause an initial load spike as workers start the first few jobs late and rush to catch up.
+
+HISTORY
+=======
+
+Apiary was originally designed and developed at Linden Lab by Charity Majors and (Dante Linden <FIXME: real name unknown>).  It was used to test MySQL to gain confidence in upgrading to version 5.0.  Apiary's initial design used RabbitMQ as its messaging bus.  Sets of workers were spawned manually on multiple machines by the user in order to achieve the desired parallelization.  Apiary also had rudimentary support for the HTTP protocol but this was unfinished, and may never have worked at all.  The query load scenario was stored in a custom text format.  At this point, Apiary was open-sourced as-is, somewhat short on documentation but functional.  It was the only tool of its kind available.
+
+Years later, Apiary was used by Lex Neva to test a new database machine build prior to replacing Linden's aging database fleet.  By this point, the query volume had increased by a significating factor and the original Apiary codebase was no longer able to generate the required query volume.  In addition, the PCAP parsing code no longer worked properly and the original developers had left the company.  Lex modified Apiary to allow the use of `pt-query-digest`, avoiding the need to use the old custom in-house written PCAP parser.
+
+Lex identified multiple bottlenecks and ended up rewriting large portions of Apiary's main engine for speed and simplicity of use.  The load scenario was now stored on disk as a series of cPickle-formatted jobs that could be read in and shoved onto the wire as-is.  Multiple-protocol support was removed in favor of raw speed.  Multiple features such as time scaling were added.  Apiary now all ran on one machine and spawned and managed its own child processes.  At this point, Apiary could generate 30,000+ queries per second.
+
+In a later role at DeviantArt Inc, Lex used Apiary to test an in-house tool called CountDB.  CountDB uses a simple raw TCP protocol, with the client and server communicating in json-serialized messages delimited by null bytes.  CountDB serves around 6000 concurrent clients in production at around 100k requests per second.  Multi-protocol support was re-added, along with threading, since the previous model used individual processes for workers and likely would not scale to 6000 processes.  This necessitated the use of a different python AMQP library (rabbitpy) that was thread-safe, leading to the somewhat unwieldy requirement of two (!) AMQP client libraries.
+
+Lex later added HTTP support in order to test DeviantArt's new fleet of web servers processing thousands of requests per second.  --offset, --skip, and related options were added in order to test fractions of the full fleet.  At this point, RabbitMQ became a significant bottleneck.  Even without durability, RabbitMQ was unable to handle enough messages per second to allow workers to report statistics on individual requests.  ZeroMQ was tested against simple Python multiprocessing Queues, and the latter was faster by at least a factor of two.  Now Apiary has no RabbitMQ dependency and has much more advanced statistics gathering capabilities.
