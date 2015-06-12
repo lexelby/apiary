@@ -53,7 +53,7 @@ Next, prepare to take a packet capture from your database host.  This can be fro
 
 My preferred packet capture method is to run this from a non-production host with a big disk:
 
-  ssh <db host> sudo timeout 5m tcpdump -n -p -w - -s 0 port 3306 > db.pcap
+    ssh <db host> sudo timeout 5m tcpdump -n -p -w - -s 0 port 3306 > db.pcap
 
 This will stream the packet capture over your SSH tunnel to your non-production host, avoiding disk IO contention on the database host.  Be sure to filter your capture so that you don't try to capture port 22; otherwise you'll probably have a pretty bad day.
 
@@ -67,21 +67,21 @@ Next, you'll need to process your traffic capture into a jobs file.  The process
 
 We can combine steps 1 and 2 (and probably 3, if you tried hard enough):
 
-  tcpdump -r <pcap file> -x -n -q -tttt | \
-    pt-query-digest --type=tcpdump --no-report --output slowlog query.log
+    tcpdump -r <pcap file> -x -n -q -tttt | \
+      pt-query-digest --type=tcpdump --no-report --output slowlog query.log
 
 This can take a very long time, so sit back.  It can also consume a large amount of RAM.
 
 Next:
 
-  bin/genjobs query.log > foo.jobs
+    bin/genjobs query.log > foo.jobs
 
 This also takes quite awhile.  The reason these take so long is that they're sorting massively interleaved streams into individual client/server conversations.  Additionally, the jobs file must be sorted by the timestamp of each job's first query.  This requires `genjobs` to hold in-flight jobs in memory and flush them to disk in order as their ends are found.
 
 Now, we have our jobs file and we can simulate load.  Spin up a new MySQL host to test on and load the snapshot you made earlier.  Keep in mind that every time you run your load scenario, you're going to need to use a fresh copy of the snapshot.  LVM can be particularly useful for rolling back to the pristine snapshot and seems to impose a relatively minimal performance penalty.
 
 Run apiary:
-  bin/apiary --workers <#> --threads <#> --protocol mysql --mysql-host <test host> --mysql-user <user> --mysql-passwd <password> --mysql-db <db> foo.jobs
+    bin/apiary --workers <#> --threads <#> --protocol mysql --mysql-host <test host> --mysql-user <user> --mysql-passwd <password> --mysql-db <db> foo.jobs
 
 Apiary will start up workers and begin to report statistics periodically, by default every 15 seconds.  Apiary reports various statistics (depending on the protocol in use) and also reports how these change from interval to interval.
 
@@ -94,7 +94,7 @@ Apiary can replay captured HTTP traffic, including keep-alive patterns (but not 
 
 Capture traffic using your favorite packet capture tool.  Only the requests are used by Apiary, and it is allowable to capture only incoming traffic with your capture tool.  Use `tcpflow` to parse the pcap file into streams, one per file, with timing information:
 
-  tcpflow -r foo.pcap -Fm -I -Z -o flows
+    tcpflow -r foo.pcap -Fm -I -Z -o flows
 
 This uses the undocumented -I switch to save timing information.  -Z prevents decompressing gzip-encoded HTTP requests -- we want apiary to send them just as they were.
 
@@ -110,8 +110,8 @@ TUNING
 
 These networking settings are useful with large query volumes:
 
-sudo bash -c 'echo 1 > /proc/sys/net/ipv4/tcp_tw_reuse'
-sudo bash -c 'echo 1024 65535 > /proc/sys/net/ipv4/ip_local_port_range'
+    sudo bash -c 'echo 1 > /proc/sys/net/ipv4/tcp_tw_reuse'
+    sudo bash -c 'echo 1024 65535 > /proc/sys/net/ipv4/ip_local_port_range'
 
 Otherwise, you may start to see errors like "Could not connect to MySQL host", or "resource not available", because the kernel will quickly run out of local ports it's willing to use.
 
@@ -119,7 +119,7 @@ Also, be sure to run apiary with a high file descriptor limit when replaying lar
 
 Tuning worker threads is important.  Too few and your workers will fall behind and be unable to simulate full production load.  Too many, and in theory you'll run out of memory or consume too much time in context switching, though in practice, I've never seen this.  You can figure out the minimum number of workers required to run your jobs file like this:
 
-  bin/count-concurrent-jobs foo.jobs
+    bin/count-concurrent-jobs foo.jobs
 
 I'd probably add a margin of 10-20% just to be sure.  For high concurrency, you may need to experiment with a balance of processes and threads.  I'd recommend running no more than 80 threads per worker process.
 
