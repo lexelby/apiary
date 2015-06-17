@@ -387,7 +387,7 @@ class WorkerBee(Thread):
             self.level("Jobs Running", "-")
 
             if not error:
-                self.status(Message.JOB_COMPLETED)
+                self.tally("Job completed successfully")
 
     def start_job(self, job_id):
         pass
