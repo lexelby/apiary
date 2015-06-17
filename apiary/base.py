@@ -184,9 +184,9 @@ class StatsGatherer(ChildProcess):
 
         table = []
 
-        for name, stat in chain(self._tallies.iteritems(),
-                                self._levels.iteritems(),
-                                self._series.iteritems()):
+        for name, stat in (sorted(self._tallies.items()) +
+                           sorted(self._levels.iteritems()) +
+                           sorted(self._series.iteritems())):
             report = stat.report()
 
             if report:
