@@ -116,6 +116,11 @@ From this report, we can learn:
   * Similarly, about 60000 requests were completed in the last reporting interval, implying that each job consists of about 5 requests on average.
   * 109 jobs are in process right now, but only 2 requests are actively running.  This implies that requests are quite short (as seen in Request Duration), and that most of the time taken to run a job is spent sleeping while waiting for the proper time to run each query.
 
+ON MySQL QPS
+============
+
+Be wary of the QPS (Queries per Second) figure reported by tools such as `innotop` when apiary is running.  Due to the way `pt-query-digest` works, each query in a transaction is prefaced with a `use` statement to ensure that it is run against the correct database.  This will artificially inflate the QPS that MySQL reports.  The "rate" figure in the "Requests Completed" statistic is a more accurate representation of the true QPS.
+
 HTTP
 ====
 
