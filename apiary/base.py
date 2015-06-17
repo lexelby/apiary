@@ -382,6 +382,7 @@ class WorkerBee(Thread):
                 error = not self.send_request(request)
                 request_end_time = time.time()
                 self.level("Requests Running", "-")
+                self.tally("Requests Completed")
                 self.series("Request Duration (ms)", (request_end_time - request_start_time) * 1000)
                 if error:
                     break
@@ -390,7 +391,7 @@ class WorkerBee(Thread):
             self.level("Jobs Running", "-")
 
             if not error:
-                self.tally("Job completed successfully")
+                self.tally("Jobs Completed")
 
     def start_job(self, job_id):
         pass
