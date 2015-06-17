@@ -101,6 +101,10 @@ class MySQLWorkerBee(apiary.WorkerBee):
         if self.connection and query:
             try:
                 cursor = self.connection.cursor()
+
+                # remove invalid cruft sometimes erroneously added by pt-query-digest
+                query = query.replace('\x00mysql_native_password', '')
+
                 rows = cursor.execute(query.strip())
                 if rows:
                     cursor.fetchall()
