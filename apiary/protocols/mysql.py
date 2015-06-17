@@ -65,8 +65,8 @@ class MySQLWorkerBee(apiary.WorkerBee):
         # aggregate these error codes since we see a lot of them
         if "Duplicate entry" in msg:
             msg = '(1062, "Duplicate entry for key")'
-        #elif "You have an error in your SQL syntax" in msg:
-        #    msg = '(1064, "You have an error in your SQL syntax")'
+        elif "You have an error in your SQL syntax" in msg:
+            msg = '(1064, "You have an error in your SQL syntax")'
         elif self._table_dne_re.match(msg):
             msg = '''(1146, "Table ___ doesn't exist")'''
 
