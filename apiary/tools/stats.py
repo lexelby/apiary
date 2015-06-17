@@ -21,6 +21,7 @@ Types of stats:
 
 import numpy
 import math
+import time
 from collections import OrderedDict
 from .table import ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT
 
@@ -109,7 +110,7 @@ class Tally(IntegerStatistic):
         super(IntegerStatistic,self).__init__()
 
         self._grand_total = 0
-        self._total = 0
+        self.reset()
 
     def add(self):
         self._total += 1
@@ -121,11 +122,13 @@ class Tally(IntegerStatistic):
 
         stats["Current"] = self._total
         stats["Total"] = self._grand_total
+        stats["Rate"] = self._total / (time.time() - self._start_time)
 
         return stats
 
     def reset(self):
         self._total = 0
+        self._start_time = time.time()
 
 class Level(IntegerStatistic):
     def __init__(self):
