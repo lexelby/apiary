@@ -87,6 +87,35 @@ Apiary will start up workers and begin to report statistics periodically, by def
 
 You can shut down Apiary using Ctrl-C.  This causes the Queen Bee to stop enqueueing jobs for the Worker Bees.  Once they finish running all jobs in the queue, Apiary will shut down.  A second Ctrl-C will immediately terminate Apiary.
 
+INTERPRETING STATISTICS
+=======================
+
+Apiary reports a set of statistics periodically during load generation.  The particular statistics gathered can vary between protocols, although some statistics are common to all protocols.  Statistics come in three different types:
+  * **Tally** - A simple counter that can only be incremented.  Reports the number of increments in the current period and the total increments ever, along with the increment rate this period.
+  * **Level** - A counter that can be incremented and decremented.  Reports the current value, along with min, max, median, mean, and standard deviation of level values seen throughout this period.
+  * **Series** - A floating-point time series.  Reports the most recent value (as "current"), along with min, max, median, mean, and standard deviation of values seen in this period.
+
+Statistics are printed in the order the types are listed above.  For each value printed, if it has changed since the last report, the amount of change is printed beside it.
+
+Here's an example report:
+
+    2015-06-17 15:09:39
+    ===================
+    ERR: <SQL syntax error>:  current:      109 (-8)      total:      226 (+109)     rate:       7 (+0)
+       ERR: <access denied>:  current:        0 (-1)      total:        1            rate:       0 (+0)
+             Jobs Completed:  current:    12937 (+295)    total:    25579 (+12937)   rate:     862 (+16)
+         Requests Completed:  current:    59890 (+1728)   total:   118052 (+59890)   rate:    3992 (+103)
+               Jobs Running:  current:      109 (+3)        min:       77 (+75)       max:     155 (+9)    median:      112 (+7)        mean:      112 (+7)       stdev:       12 (-3)
+           Requests Running:  current:        2 (+2)        min:        0             max:      16 (-6)    median:        2             mean:        2 (+0)       stdev:        1 (+0)
+      Request Duration (ms):  current: 0.428915 (+0.0889)   min: 0.295162 (-0.00381)  max: 77.0881 (+18.7) median: 0.430822 (-0.000238) mean: 0.459850 (+0.00504) stdev: 0.720739 (+0.407)
+
+From this report, we can learn:
+  * The report happened at `2015-06-17 15:09:39`
+  * 109 SQL syntax errors were reported by the `mysql` protocol plugin.  MySQL errors can be verbose and are simplified to avoid making the table excessively wide.
+  * About 13000 jobs were completed in the last reporting interval, which is 295 more than in the previous interval, and amounts to about 862 jobs completed per second.
+  * Similarly, about 60000 requests were completed in the last reporting interval, implying that each job consists of about 5 requests on average.
+  * 109 jobs are in process right now, but only 2 requests are actively running.  This implies that requests are quite short (as seen in Request Duration), and that most of the time taken to run a job is spent sleeping while waiting for the proper time to run each query.
+
 HTTP
 ====
 
