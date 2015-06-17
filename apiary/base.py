@@ -130,6 +130,9 @@ class BeeKeeper(object):
         except KeyboardInterrupt:
             print "Interrupted before shutdown process completed."
 
+            job_queue.cancel_join_thread()
+            stats_queue.cancel_join_thread()
+
 
 class StatsGatherer(ChildProcess):
     """Gather and present stats.
