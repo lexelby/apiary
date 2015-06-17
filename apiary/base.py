@@ -248,6 +248,10 @@ class QueenBee(ChildProcess):
                 else:
                     job_offset = jobs_file.tell()
                     job_id, tasks = cPickle.load(jobs_file)
+
+                    if not tasks:
+                        continue
+
                     job_start_time = tasks[0][0]
 
                 job_num += 1
