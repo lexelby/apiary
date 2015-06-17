@@ -42,6 +42,13 @@ import warnings
 class MySQLWorkerBee(apiary.WorkerBee):
     """A WorkerBee that sends transactions to MySQL"""
 
+    COMMON_ERRORS = {
+                        1062: "duplicate entry for key",
+                        1064: "SQL syntax error",
+                        1227: "access denied",
+                        1146: "table does not exist"
+                    }
+
     def __init__(self, options, *args, **kwargs):
         super(MySQLWorkerBee, self).__init__(options, *args, **kwargs)
 
@@ -62,13 +69,14 @@ class MySQLWorkerBee(apiary.WorkerBee):
             self.dynamic_host = False
 
     def error(self, msg):
-        # aggregate these error codes since we see a lot of them
-        if "Duplicate entry" in msg:
-            msg = '(1062, "Duplicate entry for key")'
-        elif "You have an error in your SQL syntax" in msg:
-            msg = '(1064, "You have an error in your SQL syntax")'
-        elif self._table_dne_re.match(msg):
-            msg = '''(1146, "Table ___ doesn't exist")'''
+        if isinstance(msg, MySQLdb.Error):
+            # we need to compress error messages so that they don't screw up the
+            # table
+
+            code = msg.args[0]
+            msg = self.COMMON_ERRORS.get(code) or "MySQL error %d" % code
+        else:
+            msg = str(msg)
 
         super(MySQLWorkerBee, self).error(msg)
 
@@ -86,7 +94,7 @@ class MySQLWorkerBee(apiary.WorkerBee):
                 del self._connect_options['read_timeout']
                 self.connection = MySQLdb.connect(**self._connect_options)
         except Exception, e:
-            self.error(str(e))
+            self.error(e)
             self.connection = None
 
     def send_request(self, query):
@@ -99,7 +107,7 @@ class MySQLWorkerBee(apiary.WorkerBee):
                 cursor.close()
                 return True
             except Exception, e:  # TODO: more restrictive error catching?
-                self.error("%s" % e)
+                self.error(e)
 
                 try:
                     cursor.close()
